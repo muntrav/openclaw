@@ -53,7 +53,7 @@ test.each(["allowlist", "open"] as const)(
       updates.enqueue(update);
     };
     await withServer(
-      telegramRequestHandler(api.handle),
+      telegramRequestHandler(api.handle.bind(api)),
       async (apiRoot) =>
         await withTempDir("openclaw-telegram-policy-", async (workspace) => {
           const mock = await startQaMockOpenAiServer();
