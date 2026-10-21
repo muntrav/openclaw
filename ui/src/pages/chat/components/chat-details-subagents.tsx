@@ -166,7 +166,7 @@ export function ChatDetailsSubagents(props: ChatDetailsSubagentsProps) {
               <span class="chat-details-subagents__counts">
                 <For each={counts()} keyed={(entry) => entry.status}>
                   {(entry) => (
-                    <span class="chat-details-subagents__count">
+                    <span class="chat-details-subagents__count" data-status={entry().status}>
                       <span>{entry().count}</span>{" "}
                       <Show
                         when={
@@ -188,8 +188,6 @@ export function ChatDetailsSubagents(props: ChatDetailsSubagentsProps) {
                             "sr-only":
                               props.mobile &&
                               (entry().status === "running" || entry().status === "done"),
-                            "chat-details-subagents__working":
-                              !props.mobile && entry().status === "running",
                           },
                         ]}
                       >
