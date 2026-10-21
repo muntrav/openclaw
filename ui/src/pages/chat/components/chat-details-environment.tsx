@@ -126,6 +126,7 @@ export function ChatDetailsEnvironment(props: ChatDetailsEnvironmentDesktopProps
       title={t("chat.sessionDetails.environment")}
       expanded={expanded()}
       presented={props.presented}
+      animateContentResize
       onExpandedChange={(next) => {
         if (props.expanded === undefined) {
           setLocalExpanded(next);
