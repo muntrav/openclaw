@@ -300,22 +300,15 @@ it.for(["revoked", "aborted"] as const)(
       counter.gate = undefined;
     }
     try {
-      expect(await Promise.allSettled(peers)).toEqual([
-        {
+      expect(await Promise.allSettled(peers)).toEqual(
+        [0, 1].map((index) => ({
           status: "fulfilled",
           value: expect.objectContaining({
             kind: "session-transcript-initialized",
-            sessionKey: "agent:main:peer-0",
+            sessionKey: `agent:main:peer-${index}`,
           }),
-        },
-        {
-          status: "fulfilled",
-          value: expect.objectContaining({
-            kind: "session-transcript-initialized",
-            sessionKey: "agent:main:peer-1",
-          }),
-        },
-      ]);
+        })),
+      );
       await expect(initiating).rejects.toBe(refused);
       expect(initiatingOperation).not.toHaveBeenCalled();
       await expect(initiator.runExisting(initiatingSource, initiatingOperation)).rejects.toBe(

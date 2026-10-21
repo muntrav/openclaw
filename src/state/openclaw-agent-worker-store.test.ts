@@ -57,6 +57,32 @@ import { waitForFixtureEntry } from "./openclaw-agent-worker-store.wait.test-sup
 import { retainOpenClawStateDatabaseForIdle } from "./openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "./openclaw-state-db.js";
 
+const allow = () => undefined;
+const append = (
+  value: string,
+  input: Omit<AgentWorkerFixtureOperations["append"]["input"], "value"> = {},
+) => ({ type: "append" as const, input: { value, ...input } });
+const expectValues = (db: DatabaseSync, values: string[]) =>
+  expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual(
+    values.map((value) => ({ value })),
+  );
+
+async function openWorker(
+  source: Parameters<typeof openOpenClawAgentSqliteWorkerStore>[1],
+  input?: Parameters<typeof bindSqliteWorkerBackend>[0],
+) {
+  const worker = await openOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(
+    options,
+    source,
+    {
+      moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
+      input,
+    },
+  );
+  workers.add(worker);
+  return worker;
+}
+
 const leaseCleanupFault = useSqliteWorkerFault([
   {
     name: "refuse_worker_lease_cleanup",
@@ -110,23 +136,16 @@ async function setup(input?: Parameters<typeof bindSqliteWorkerBackend>[0]) {
   if (execution) {
     executions.add(execution);
   }
-  const worker = await openOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(
-    options,
-    execution ? { execution } : db,
-    {
-      moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
-      input: { ...input, receiptBroadcastName: receipts.broadcastName },
-    },
-  );
-  workers.add(worker);
+  const worker = await openWorker(execution ? { execution } : db, {
+    ...input,
+    receiptBroadcastName: receipts.broadcastName,
+  });
   return { db, worker };
 }
 
 it("leaves agent worker checkpoints to maintenance instead of foreground commits", async () => {
   const { worker } = await setup();
-  expect(
-    await worker.execute({ type: "inspect", input: "wal_autocheckpoint" }, () => undefined),
-  ).toBe(0);
+  expect(await worker.execute({ type: "inspect", input: "wal_autocheckpoint" }, allow)).toBe(0);
 });
 
 it("retains an idle agent executor for thirty minutes and renews the window after reborrowing", async () => {
@@ -138,21 +157,17 @@ it("retains an idle agent executor for thirty minutes and renews the window afte
       .prepare("SELECT lease_id FROM agent_database_leases WHERE path = ? ORDER BY lease_id")
       .all(options.path);
   const hostLeases = readLeases();
-  const append = (value: string) =>
-    worker.run(
-      (scope) => scope.execute({ type: "append", input: { value } }),
-      () => undefined,
-    );
+  const publish = (value: string) => worker.run((scope) => scope.execute(append(value)), allow);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    await append("first");
+    await publish("first");
     const retainedLeases = readLeases();
     expect(retainedLeases).toHaveLength(hostLeases.length + 1);
 
     await vi.advanceTimersByTimeAsync(SQLITE_IDLE_HANDLE_TTL_MS - 1);
     const borrowed = captureOpenClawAgentDatabaseExecution(options);
     executions.add(borrowed);
-    await append("reborrowed");
+    await publish("reborrowed");
     expect(readLeases()).toEqual(retainedLeases);
     await vi.advanceTimersByTimeAsync(SQLITE_IDLE_HANDLE_TTL_MS);
     expect(readLeases()).toEqual(retainedLeases);
@@ -163,14 +178,10 @@ it("retains an idle agent executor for thirty minutes and renews the window afte
     expect(readLeases()).toEqual(retainedLeases);
     await vi.advanceTimersByTimeAsync(1);
     // A new request joins the expired generation's cleanup before reopening it.
-    await append("after idle");
+    await publish("after idle");
     expect(readLeases()).toHaveLength(retainedLeases.length);
     expect(readLeases()).not.toEqual(retainedLeases);
-    expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-      { value: "first" },
-      { value: "reborrowed" },
-      { value: "after idle" },
-    ]);
+    expectValues(db, ["first", "reborrowed", "after idle"]);
   } finally {
     vi.useRealTimers();
     releaseState();
@@ -179,10 +190,7 @@ it("retains an idle agent executor for thirty minutes and renews the window afte
 
 it("retains a warm executor through a fallback wait between publication generations", async () => {
   const { db, worker } = await setup();
-  const firstThread = await worker.execute(
-    { type: "append", input: { value: "before preparation" } },
-    () => undefined,
-  );
+  const firstThread = await worker.execute(append("before preparation"), allow);
   const lifetime = captureOpenClawAgentDatabaseExecution(options);
   executions.add(lifetime);
   await worker.close();
@@ -192,25 +200,15 @@ it("retains a warm executor through a fallback wait between publication generati
   const publication = (async () => {
     entered.resolve();
     await resume.promise;
-    next = await openOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(options, db, {
-      moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
-      input: undefined,
-    });
-    workers.add(next);
-    return next.run(
-      (scope) => scope.execute({ type: "append", input: { value: "after preparation" } }),
-      () => undefined,
-    );
+    next = await openWorker(db);
+    return next.run((scope) => scope.execute(append("after preparation")), allow);
   })();
   try {
     await entered.promise;
     markGatewayRestartDraining();
     resume.resolve();
     expect(await publication).toBe(firstThread);
-    expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-      { value: "before preparation" },
-      { value: "after preparation" },
-    ]);
+    expectValues(db, ["before preparation", "after preparation"]);
     await next?.close();
     expect(db.isOpen).toBe(true);
     beginGatewayShutdownCleanup();
@@ -242,44 +240,27 @@ it.each([false, true])(
         .all(options.path);
     const hostLeases = readLeases();
     try {
-      const firstThread = await worker.run(
-        async (scope) => {
-          const thread = await scope.execute({ type: "append", input: { value: "first" } });
-          markGatewayRestartDraining();
-          return thread;
-        },
-        () => undefined,
-      );
+      const firstThread = await worker.run(async (scope) => {
+        const thread = await scope.execute(append("first"));
+        markGatewayRestartDraining();
+        return thread;
+      }, allow);
       const retainedLeases = readLeases();
-      const secondThread = await worker.execute(
-        { type: "append", input: { value: "second" } },
-        () => undefined,
-      );
+      const secondThread = await worker.execute(append("second"), allow);
       expect(secondThread).toBe(firstThread);
       expect(retainedLeases).toHaveLength(hostLeases.length + 1);
       expect(readLeases()).toEqual(retainedLeases);
-      await worker.run(
-        (scope) => scope.execute({ type: "append", input: { value: "third" } }),
-        () => undefined,
-      );
+      await worker.run((scope) => scope.execute(append("third")), allow);
       expect(readLeases()).toEqual(retainedLeases);
       beginGatewayShutdownCleanup();
-      const cleanupThread = await worker.execute(
-        { type: "append", input: { value: "cleanup" } },
-        () => undefined,
-      );
+      const cleanupThread = await worker.execute(append("cleanup"), allow);
       if (retainGeneration) {
         expect(cleanupThread).toBe(firstThread);
         expect(readLeases()).toEqual(retainedLeases);
       } else {
         expect(readLeases()).toEqual(hostLeases);
       }
-      expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-        { value: "first" },
-        { value: "second" },
-        { value: "third" },
-        { value: "cleanup" },
-      ]);
+      expectValues(db, ["first", "second", "third", "cleanup"]);
       await worker.close();
       await execution?.release();
       expect(db.isOpen).toBe(false);
@@ -304,7 +285,7 @@ it.each([false, true])(
     const releaseHost = retainAgentDatabase(db);
     let reader: DatabaseSync | undefined;
     try {
-      await worker.execute({ type: "append", input: { value: "worker commit" } }, () => {});
+      await worker.execute(append("worker commit"), () => {});
       beginGatewayShutdownCleanup();
       await worker.close();
       if (pinned) {
@@ -355,15 +336,12 @@ it("records a clean sibling receipt while an admitted worker publication still o
       nativeClose();
       healthyClosed.resolve();
     });
-    const publication = worker.run(
-      async (scope) => {
-        const result = await scope.execute({ type: "append", input: { value: "committed" } });
-        entered.resolve();
-        await release.promise;
-        return result;
-      },
-      () => undefined,
-    );
+    const publication = worker.run(async (scope) => {
+      const result = await scope.execute(append("committed"));
+      entered.resolve();
+      await release.promise;
+      return result;
+    }, allow);
     let closing: Promise<void> | undefined;
     let closed = false;
     try {
@@ -458,41 +436,34 @@ describe("pooled agent publication owner (captured source)", () => {
             throw new Error("fixture authority revoked during preparation");
           }
         };
-        const command = { type: "append" as const, input: { value: "prepared" } };
+        const command = append("prepared");
         const work =
           entry === "single"
             ? worker.execute(command, assertCurrent)
             : worker.run((scope) => scope.execute(command), assertCurrent);
-        void work.catch(() => undefined);
+        void work.catch(allow);
         try {
           await waitForFixtureEntry(receipts, preparation.codeMarker, work, signal);
           expect(fs.existsSync(preparation.commandMarker)).toBe(false);
-          expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
+          expectValues(db, []);
           fs.writeFileSync(preparation.codeGate, "release code loading");
           await waitForFixtureEntry(receipts, preparation.commandMarker, work, signal);
-          expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
+          expectValues(db, []);
           current = outcome === "success";
           fs.writeFileSync(preparation.commandGate, "release command preparation");
           if (outcome === "revoked") {
             await expect(work).rejects.toThrow("fixture authority revoked during preparation");
-            expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
-            await worker.run(
-              (scope) => scope.execute({ type: "append", input: { value: "retry" } }),
-              () => undefined,
-            );
-            expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([
-              { value: "retry" },
-            ]);
+            expectValues(db, []);
+            await worker.run((scope) => scope.execute(append("retry")), allow);
+            expectValues(db, ["retry"]);
           } else {
             expect(await work).toBeGreaterThan(0);
-            expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([
-              { value: "prepared" },
-            ]);
+            expectValues(db, ["prepared"]);
           }
         } finally {
           fs.writeFileSync(preparation.codeGate, "release for cleanup");
           fs.writeFileSync(preparation.commandGate, "release for cleanup");
-          await work.catch(() => undefined);
+          await work.catch(allow);
         }
       }),
   );
@@ -507,12 +478,8 @@ describe("pooled agent publication owner (captured source)", () => {
       let ticks = 0;
       const timer = setInterval(() => ticks++, 10);
       const native = worker.run(
-        (scope) =>
-          scope.execute({
-            type: "append",
-            input: { value: "worker", transactionMarker, delayMs: 250 },
-          }),
-        () => undefined,
+        (scope) => scope.execute(append("worker", { transactionMarker, delayMs: 250 })),
+        allow,
       );
       try {
         await waitForFixtureEntry(receipts, transactionMarker, native, signal);
@@ -527,22 +494,18 @@ describe("pooled agent publication owner (captured source)", () => {
             db,
           ),
         );
-        expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
+        expectValues(db, []);
         await nextTurn();
         expect(observed).toEqual([]);
         expect(await native).toBeGreaterThan(0);
         await Promise.all(writes);
         expect(ticks).toBeGreaterThan(5);
         expect(observed).toEqual(["first", "second"]);
-        expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-          { value: "worker" },
-          { value: "first" },
-          { value: "second" },
-        ]);
+        expectValues(db, ["worker", "first", "second"]);
         expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
       } finally {
         clearInterval(timer);
-        await native.catch(() => undefined);
+        await native.catch(allow);
       }
     }));
 
@@ -553,24 +516,20 @@ describe("pooled agent publication owner (captured source)", () => {
       let current = true;
       const transactionMarker = path.join(root, "before-commit");
       const work = worker.run(
-        (scope) =>
-          scope.execute({ type: "append", input: { value: "refused", transactionMarker } }),
+        (scope) => scope.execute(append("refused", { transactionMarker })),
         () => {
           if (!current) {
             throw new Error("fixture authority revoked");
           }
         },
       );
-      void work.catch(() => undefined);
+      void work.catch(allow);
       await waitForFixtureEntry(receipts, transactionMarker, work, signal);
       current = false;
       await expect(work).rejects.toThrow("fixture authority revoked");
-      expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
-      await worker.run(
-        (scope) => scope.execute({ type: "append", input: { value: "retry" } }),
-        () => undefined,
-      );
-      expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "retry" }]);
+      expectValues(db, []);
+      await worker.run((scope) => scope.execute(append("retry")), allow);
+      expectValues(db, ["retry"]);
     }));
 
   it.for(["scope", "single"] as const)(
@@ -580,14 +539,11 @@ describe("pooled agent publication owner (captured source)", () => {
         signal.throwIfAborted();
         const { db, worker } = await setup();
         const commitMarker = path.join(root, "accepted-commit");
-        const command = { type: "append" as const, input: { value: "accepted", commitMarker } };
+        const command = append("accepted", { commitMarker });
         const work =
           entry === "single"
-            ? worker.execute(command, () => undefined)
-            : worker.run(
-                (scope) => scope.execute(command),
-                () => undefined,
-              );
+            ? worker.execute(command, allow)
+            : worker.run((scope) => scope.execute(command), allow);
         await waitForFixtureEntry(receipts, commitMarker, work, signal);
         let closed = false;
         const close = worker.close().then(() => {
@@ -595,15 +551,10 @@ describe("pooled agent publication owner (captured source)", () => {
         });
         await nextTurn();
         expect(closed).toBe(false);
-        await expect(
-          worker.run(
-            async () => 0,
-            () => undefined,
-          ),
-        ).rejects.toThrow("closed");
+        await expect(worker.run(async () => 0, allow)).rejects.toThrow("closed");
         expect(await work).toBeGreaterThan(0);
         await close;
-        expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "accepted" }]);
+        expectValues(db, ["accepted"]);
       }),
   );
 
@@ -611,58 +562,30 @@ describe("pooled agent publication owner (captured source)", () => {
     const { db, worker } = await setup();
     const entered = createDeferredCore();
     const resume = createDeferredCore();
-    const first = worker.run(
-      async (scope) => {
-        entered.resolve();
-        await resume.promise;
-        return scope.execute({ type: "append", input: { value: "first" } });
-      },
-      () => undefined,
-    );
+    const first = worker.run(async (scope) => {
+      entered.resolve();
+      await resume.promise;
+      return scope.execute(append("first"));
+    }, allow);
     await Promise.race([entered.promise, first]);
     const cancellation = new AbortController();
     const reason = new Error("Cancel the queued single publication");
-    const canceled = worker.execute(
-      { type: "append", input: { value: "canceled" } },
-      () => undefined,
-      { signal: cancellation.signal },
-    );
+    const canceled = worker.execute(append("canceled"), allow, { signal: cancellation.signal });
     const refused = expect(canceled).rejects.toBe(reason);
     cancellation.abort(reason);
-    const following = worker.execute(
-      { type: "append", input: { value: "following" } },
-      () => undefined,
-    );
+    const following = worker.execute(append("following"), allow);
     resume.resolve();
     await Promise.all([first, refused, following]);
-    expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-      { value: "first" },
-      { value: "following" },
-    ]);
+    expectValues(db, ["first", "following"]);
   });
 
   it("preserves a single-command result through native binding cleanup failure", async () => {
     const { db, worker } = await setup({ closeFailure: "fixture binding cleanup failed" });
-    expect(
-      await worker.execute({ type: "append", input: { value: "committed" } }, () => undefined),
-    ).toBeGreaterThan(0);
-    expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "committed" }]);
-    const following = await openOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(
-      options,
-      db,
-      {
-        moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
-        input: undefined,
-      },
-    );
-    workers.add(following);
-    expect(
-      await following.execute({ type: "append", input: { value: "follower" } }, () => undefined),
-    ).toBeGreaterThan(0);
-    expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-      { value: "committed" },
-      { value: "follower" },
-    ]);
+    expect(await worker.execute(append("committed"), allow)).toBeGreaterThan(0);
+    expectValues(db, ["committed"]);
+    const following = await openWorker(db);
+    expect(await following.execute(append("follower"), allow)).toBeGreaterThan(0);
+    expectValues(db, ["committed", "follower"]);
   });
 
   it.each(["ordinary", "admission"] as const)(
@@ -690,10 +613,7 @@ describe("pooled agent publication owner (captured source)", () => {
         }
         admit(request, grant);
       });
-      const result = worker.execute(
-        { type: "append", input: { value: "failed" } },
-        () => undefined,
-      );
+      const result = worker.execute(append("failed"), allow);
       if (failure === "admission") {
         await expect(result).rejects.toBe(commandRefusal);
       } else {
@@ -701,31 +621,19 @@ describe("pooled agent publication owner (captured source)", () => {
       }
       expect(commandRefusals).toBe(failure === "admission" ? 1 : 0);
       expect(refusals).toBe(1);
-      expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
+      expectValues(db, []);
       interception.mockRestore();
 
-      const following = await openOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(
-        options,
-        db,
-        {
-          moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
-          input: undefined,
-        },
-      );
-      workers.add(following);
-      expect(
-        await following.execute({ type: "append", input: { value: "follower" } }, () => undefined),
-      ).toBeGreaterThan(0);
-      expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "follower" }]);
+      const following = await openWorker(db);
+      expect(await following.execute(append("follower"), allow)).toBeGreaterThan(0);
+      expectValues(db, ["follower"]);
     },
   );
 
   it("does not grant a cleanup transaction after a single read", async () => {
     const { db, worker } = await setup({ closeWriteValue: "must not commit" });
-    await expect(
-      worker.execute({ type: "inspect", input: undefined }, () => undefined),
-    ).resolves.toBe(0);
-    expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
+    await expect(worker.execute({ type: "inspect", input: undefined }, allow)).resolves.toBe(0);
+    expectValues(db, []);
   });
 
   it("refuses opening before the native factory without terminating pooled siblings", async () => {
@@ -738,16 +646,13 @@ describe("pooled agent publication owner (captured source)", () => {
         const sibling = await setup();
         siblings.push(sibling);
         const entered = createDeferredCore();
-        const work = sibling.worker.run(
-          async (scope) => {
-            entered.resolve();
-            await resume.promise;
-            await scope.execute({ type: "append", input: { value: "survived" } });
-          },
-          () => undefined,
-        );
+        const work = sibling.worker.run(async (scope) => {
+          entered.resolve();
+          await resume.promise;
+          await scope.execute(append("survived"));
+        }, allow);
         held.push(work);
-        void work.catch(() => undefined);
+        void work.catch(allow);
         await Promise.race([entered.promise, work]);
       }
       let refused = 0;
@@ -762,10 +667,7 @@ describe("pooled agent publication owner (captured source)", () => {
       const openMarker = path.join(root, "factory-entered");
       const { worker: refusedWorker } = await setup({ openMarker });
       await expect(
-        refusedWorker.run(
-          (scope) => scope.execute({ type: "append", input: { value: "refused" } }),
-          () => undefined,
-        ),
+        refusedWorker.run((scope) => scope.execute(append("refused")), allow),
       ).rejects.toThrow("controlled opening revocation");
       interception.mockRestore();
       expect(refused).toBe(1);
@@ -773,7 +675,7 @@ describe("pooled agent publication owner (captured source)", () => {
       resume.resolve();
       await Promise.all(held);
       for (const { db } of siblings) {
-        expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "survived" }]);
+        expectValues(db, ["survived"]);
       }
     } finally {
       resume.resolve();
@@ -781,66 +683,50 @@ describe("pooled agent publication owner (captured source)", () => {
     }
   });
 
-  it.each(["queued"] as const)(
-    "preserves a committed result and admits a %s follower after cleanup admission is refused",
-    async (follower) => {
-      const { db, worker } = await setup();
-      const committed = createDeferredCore<number>();
-      const release = createDeferredCore();
-      let refuseCleanup = false;
-      let refusals = 0;
-      const interception = probe.admission(admission, (request, grant, admit) => {
-        if (refuseCleanup && request.stage === "prepare") {
-          refuseCleanup = false;
-          refusals++;
-          throw new Error("controlled publication cleanup admission refusal");
-        }
-        admit(request, grant);
-      });
-      const first = worker.run(
-        async (scope) => {
-          const result = await scope.execute({ type: "append", input: { value: "first" } });
-          committed.resolve(result);
-          await release.promise;
-          refuseCleanup = true;
-          return result;
-        },
-        () => undefined,
-      );
-      void first.catch(() => undefined);
-      let second: Promise<number> | undefined;
-      const runFollower = () =>
-        worker.run(
-          (scope) => scope.execute({ type: "append", input: { value: "second" } }),
-          () => undefined,
-        );
-      try {
-        const result = await Promise.race([committed.promise, first]);
-        expect(result).toBeGreaterThan(0);
-        expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "first" }]);
-        if (follower === "queued") {
-          // The test context captures this borrower before the first writer starts cleanup.
-          second = runFollower();
-          void second.catch(() => undefined);
-        }
-        release.resolve();
-        expect(await first).toBe(result);
-        expect(refusals).toBe(1);
-        interception.mockRestore();
-
-        second ??= runFollower();
-        expect(await second).toBeGreaterThan(0);
-        expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-          { value: "first" },
-          { value: "second" },
-        ]);
-      } finally {
-        release.resolve();
-        await Promise.allSettled(second ? [first, second] : [first]);
-        interception.mockRestore();
+  it("preserves a committed result and admits a queued follower after cleanup admission is refused", async () => {
+    const { db, worker } = await setup();
+    const committed = createDeferredCore<number>();
+    const release = createDeferredCore();
+    let refuseCleanup = false;
+    let refusals = 0;
+    const interception = probe.admission(admission, (request, grant, admit) => {
+      if (refuseCleanup && request.stage === "prepare") {
+        refuseCleanup = false;
+        refusals++;
+        throw new Error("controlled publication cleanup admission refusal");
       }
-    },
-  );
+      admit(request, grant);
+    });
+    const first = worker.run(async (scope) => {
+      const result = await scope.execute(append("first"));
+      committed.resolve(result);
+      await release.promise;
+      refuseCleanup = true;
+      return result;
+    }, allow);
+    void first.catch(allow);
+    let second: Promise<number> | undefined;
+    const runFollower = () => worker.run((scope) => scope.execute(append("second")), allow);
+    try {
+      const result = await Promise.race([committed.promise, first]);
+      expect(result).toBeGreaterThan(0);
+      expectValues(db, ["first"]);
+      // The test context captures this borrower before the first writer starts cleanup.
+      second = runFollower();
+      void second.catch(allow);
+      release.resolve();
+      expect(await first).toBe(result);
+      expect(refusals).toBe(1);
+      interception.mockRestore();
+
+      expect(await second).toBeGreaterThan(0);
+      expectValues(db, ["first", "second"]);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(second ? [first, second] : [first]);
+      interception.mockRestore();
+    }
+  });
 
   it("retains exact canonical lease cleanup after failure and releases it on retry", async () => {
     const { db, worker } = await setup();
@@ -851,10 +737,7 @@ describe("pooled agent publication owner (captured source)", () => {
         .all(options.path);
     const hostLeases = readLeases();
     expect(hostLeases).toHaveLength(1);
-    await worker.run(
-      (scope) => scope.execute({ type: "append", input: { value: "before cleanup" } }),
-      () => undefined,
-    );
+    await worker.run((scope) => scope.execute(append("before cleanup")), allow);
     const retainedLeases = readLeases();
     const workerLeases = retainedLeases.filter(
       (row) => !hostLeases.some((host) => host.lease_id === row.lease_id),
@@ -875,17 +758,8 @@ describe("pooled agent publication owner (captured source)", () => {
         expect(error).toMatchObject({ message: "controlled worker lease cleanup failure" });
       }
       expect(readLeases()).toEqual(retainedLeases);
-      await expect(
-        worker.run(
-          async () => 0,
-          () => undefined,
-        ),
-      ).rejects.toThrow("closed");
-      const open = () =>
-        openOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(options, db, {
-          moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
-          input: undefined,
-        });
+      await expect(worker.run(async () => 0, allow)).rejects.toThrow("closed");
+      const open = () => openWorker(db);
       await expect(open()).rejects.toThrow("resources are closing");
       expect(readLeases()).toEqual(retainedLeases);
       leaseCleanupFault.disable();
@@ -893,15 +767,8 @@ describe("pooled agent publication owner (captured source)", () => {
       expect(retried).not.toContainEqual(expect.objectContaining({ status: "rejected" }));
       expect(readLeases()).toEqual(hostLeases);
       const recovered = await open();
-      workers.add(recovered);
-      await recovered.run(
-        (scope) => scope.execute({ type: "append", input: { value: "after cleanup" } }),
-        () => undefined,
-      );
-      expect(db.prepare("SELECT value FROM worker_proof ORDER BY rowid").all()).toEqual([
-        { value: "before cleanup" },
-        { value: "after cleanup" },
-      ]);
+      await recovered.run((scope) => scope.execute(append("after cleanup")), allow);
+      expectValues(db, ["before cleanup", "after cleanup"]);
       expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
     } catch (error) {
       failures.push(error);
@@ -949,12 +816,8 @@ describe("pooled agent publication owner (captured source)", () => {
       const exec = vi.spyOn(db, "exec");
       const transactionMarker = path.join(root, "maintenance-transaction");
       const work = worker.run(
-        (scope) =>
-          scope.execute({
-            type: "append",
-            input: { value: "published", transactionMarker, delayMs: 250 },
-          }),
-        () => undefined,
+        (scope) => scope.execute(append("published", { transactionMarker, delayMs: 250 })),
+        allow,
       );
       await waitForFixtureEntry(receipts, transactionMarker, work, signal);
       const started = performance.now();
@@ -964,10 +827,10 @@ describe("pooled agent publication owner (captured source)", () => {
       expect(freePages()).toBe(before);
       await work;
       await maintenance;
-      await withOpenClawAgentDatabaseWrite(options, () => undefined, db);
+      await withOpenClawAgentDatabaseWrite(options, allow, db);
       expect(exec.mock.calls.some(([sql]) => sql.includes("incremental_vacuum"))).toBe(false);
       expect(before - freePages()).toBeGreaterThan(0);
       expect(before - freePages()).toBeLessThanOrEqual(512);
-      expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "published" }]);
+      expectValues(db, ["published"]);
     }));
 });
