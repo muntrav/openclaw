@@ -1,14 +1,12 @@
 import fs from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ensureManagedCrabboxBinary, type CrabboxBinary } from "./crabbox-managed-binary.js";
 import type { CrabboxCommandRunner } from "./crabbox-worker-command.js";
 import {
   commandResult,
-  createProviderFixtures,
+  createProviderTestHarness,
   OPENCLAW_ROOT,
 } from "./crabbox-worker-provider.test-support.js";
 
@@ -28,10 +26,9 @@ const actual = await vi.importActual<typeof import("./crabbox-managed-binary.js"
   "./crabbox-managed-binary.js",
 );
 const SIBLING_BINARY = path.resolve(OPENCLAW_ROOT, "../crabbox/bin/crabbox");
-const { providers, createProvider } = createProviderFixtures({
+const { createProvider, tempDirs } = createProviderTestHarness({
   isExecutable: (candidate) => candidate === SIBLING_BINARY,
 });
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const binaryResult = { binary: SIBLING_BINARY, version: "999.0.0" };
 function fixture(command: CrabboxCommandRunner = async () => commandResult({ stdout: "[]" })) {
   const runCommand = vi.fn(command);
@@ -47,21 +44,6 @@ function heldAcquisition(command?: CrabboxCommandRunner) {
   });
   return { ...fixture(command), started, finish };
 }
-beforeEach(() => {
-  vi.mocked(ensureManagedCrabboxBinary)
-    .mockReset()
-    .mockImplementation(async (params) => ({
-      binary: params?.binary ?? "crabbox",
-      version: "999.0.0",
-    }));
-});
-afterEach(async () => {
-  await Promise.all([...providers].map((provider) => provider.dispose()));
-  providers.clear();
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
-  syncBuiltinESMExports();
-});
 
 it.each([
   ["current", commandResult({ stdout: "crabbox 999.0.0" }), "", true],
