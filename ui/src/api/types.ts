@@ -29,6 +29,7 @@ import type {
   SessionsPatchResultBase,
 } from "../../../src/shared/session-types.js";
 export type {
+  AgentSummary,
   AgentIdentityResult,
   ArtifactsDownloadResult as ArtifactDownloadResult,
   ConfigSchemaResponse,
