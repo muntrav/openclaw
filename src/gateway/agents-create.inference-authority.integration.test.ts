@@ -169,7 +169,6 @@ it(
                 defaults: {
                   workspace: state.workspaceDir,
                   skipBootstrap: true,
-                  heartbeat: { every: "0m" },
                   model: provider.modelRef,
                   models: {
                     [provider.modelRef]: { params: { transport: "sse", openaiWsWarmup: false } },
