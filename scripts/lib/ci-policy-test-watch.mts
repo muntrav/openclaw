@@ -1536,6 +1536,7 @@ const policyTestWatches: readonly PolicyTestWatch[] = [
     "extensions/memory-core/src/memory/manager-search-provenance.test.ts",
     "extensions/memory-core/src/memory/manager-temporal-ranking.test.ts",
     "extensions/memory-core/src/memory/manager.watcher-filesystem.test.ts",
+    "extensions/memory-core/src/tools.index-upgrade.test.ts",
     "extensions/memory-core/src/memory/manager-candidate-repair.test.ts",
     "extensions/memory-core/src/memory/manager-keyword-retrieval.test.ts",
     "extensions/memory-core/src/memory/manager-search-orchestration.test.ts",

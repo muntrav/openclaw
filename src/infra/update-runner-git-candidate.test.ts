@@ -640,7 +640,7 @@ describe("Git candidate activation", () => {
         }
         if (!restoreRuntime && source === distBackup && destination === path.join(root, "dist")) {
           restoreFaultInjected = true;
-          await writeFixtureTree(String(destination), { "restore-race": "occupied" });
+          await writeFixtureTree(destination, { "restore-race": "occupied" });
         }
         if (
           String(source).endsWith(`${path.sep}candidate`) &&

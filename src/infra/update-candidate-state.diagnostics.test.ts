@@ -143,11 +143,21 @@ it("does not promote private filename text after a false cause marker", () => {
   expect(fact.message).toContain("[redacted-path]");
 });
 
-it("retains the inventory cause across redacted multi-source reporting", () => {
-  const diagnostics = inspection({
+it.each([
+  {
+    operation: "State schema inventory",
+    paths: [String.raw`C:\Users\Private Operator\state.sqlite`],
+  },
+  {
+    operation: "State schema inspection",
+    paths: [String.raw`\\private-server\private-share\state.sqlite`],
+  },
+  {
     operation: "State schema inventory",
     paths: [`${stateDir}/state.sqlite`, `${stateDir}/other.sqlite`],
-  });
+  },
+] as const)("retains the $operation cause across redacted reporting for $paths", (testCase) => {
+  const diagnostics = inspection(testCase);
   diagnostics.onOutputChunk(Buffer.from("EACCES: permission denied"), "stderr");
 
   const [fact] = normalizeUpdateFailureFacts(

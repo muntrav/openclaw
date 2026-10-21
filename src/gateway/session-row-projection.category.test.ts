@@ -127,6 +127,7 @@ it.for(["search", "full", "overflow"] as const)(
             expect(projection.selectEntries({ key: oldest.key }, true)).toHaveLength(1);
             expect(admitted.length).toBeGreaterThan(0);
             expect(admitted.every((keys) => keys.length <= MAX_SESSION_ROW_FACTS_KEYS)).toBe(true);
+            expect(reads.every((keys) => keys.length <= MAX_SESSION_ROW_FACTS_KEYS)).toBe(true);
             expect([...new Set(reads.flat())].toSorted()).toEqual(
               queries.map(({ key }) => key).toSorted(),
             );

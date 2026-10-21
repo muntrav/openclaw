@@ -294,7 +294,9 @@ it("reuses an unknown preview until a committed transcript watermark changes", a
     clearStoredSessionRowTranscriptForTest(scope);
     const initial = observeSessionRowBackfill([scope.sessionKey]);
     const backfill = vi.spyOn(transcriptBackfill, "backfillSessionRowTranscriptFields");
-    cleanup.defer(() => vi.useRealTimers());
+    cleanup.defer(() => {
+      vi.useRealTimers();
+    });
     const projection = await create({ cfg, modelCatalog: [] });
     await projection.ensureMaterialized();
     projection.describe(query);

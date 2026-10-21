@@ -167,7 +167,7 @@ describe("Git runtime promotion", () => {
           backup = String(target);
         }
         if (rejectRestore && source === backup && target === destination) {
-          await writeFixtureTree(String(target), { "restore-race": "occupied" });
+          await writeFixtureTree(target, { "restore-race": "occupied" });
         }
         return rename(source, target);
       });

@@ -440,7 +440,6 @@ async function capacityFixture(mebibytes: number | null, worker = false) {
       assessInitialUpdateSnapshotCapacity({
         config: {},
         stateDir: f.stateDir,
-        candidateRoot: f.root,
         env: {},
       }),
     prepare: (config: OpenClawConfig = {}) => prepare(f, { config }),

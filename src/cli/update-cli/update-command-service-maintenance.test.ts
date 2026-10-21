@@ -180,6 +180,11 @@ it.each(maintenanceOperations)(
       };
       const service = mockMaintenanceService(home, {
         readCommand: async () => structuredClone(command),
+        readRuntime: async () => ({
+          status: operation === "offline" ? "stopped" : "running",
+          pid: operation === "offline" ? undefined : fixtureGatewayPid,
+          systemd: { managerUid: 2001 },
+        }),
         stop: vi.fn(async () => {
           expect(timeout).toBe(330);
         }),
@@ -198,6 +203,11 @@ it.each(maintenanceOperations)(
       const warning =
         "Resident budget 25000ms: admitted turn interrupted; next Gateway starts with 330s.";
       mocks.drain.mockImplementationOnce(async ({ warn }, stop) => {
+        if (operation === "refused") {
+          throw new Error(
+            "Gateway maintenance stop refused: data at risk in owner phase session-mutation",
+          );
+        }
         if (runId) {
           warn(warning);
         }
@@ -227,8 +237,10 @@ it.each(maintenanceOperations)(
           expectedService: inspected,
           ...(operation === "refresh" ? { phase: "refresh" as const } : {}),
         });
-        if (operation === "changed-during-refresh") {
-          await expect(stop).rejects.toThrow("definition changed");
+        if (operation === "refused" || operation === "changed-during-refresh") {
+          await expect(stop).rejects.toThrow(
+            operation === "refused" ? "owner phase session-mutation" : "definition changed",
+          );
           expect(service.stop).not.toHaveBeenCalled();
           return;
         }
@@ -246,7 +258,7 @@ it.each(maintenanceOperations)(
             }),
           );
         }
-        if (["refresh", "no-restart", "no-restart-text"].includes(operation)) {
+        if (["offline", "refresh", "no-restart", "no-restart-text"].includes(operation)) {
           expect(timeout).toBe(330);
           expect(stopped.stopped).toBe(false);
           expectNoServiceCalls(service.stop, service.start, service.restart);

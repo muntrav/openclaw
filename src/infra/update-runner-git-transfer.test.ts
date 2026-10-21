@@ -7,6 +7,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { CommandProcessCleanupError } from "../process/exec-result.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { gitNullConfigPath } from "./git-exec.js";
+import { withGitTargetInspectionRoot } from "./update-runner-git-target.js";
 import { prepareGitCandidateTransfer } from "./update-runner-git-transfer.js";
 import type { CommandRunner, RunStepOptions } from "./update-runner-types.js";
 import type { UpdateStepResult } from "./update-step-result.js";
@@ -45,6 +46,24 @@ function payload(prefix: string, blocks: number) {
     ),
   );
 }
+
+it("rejects incomplete target inspection output even when Git exits zero", async () => {
+  const runCommand: CommandRunner = async (argv) => ({
+    ...commandResult(0, "a".repeat(40)),
+    ...(argv.includes("for-each-ref") ? { killed: true, termination: "signal" as const } : {}),
+  });
+  await expect(
+    withGitTargetInspectionRoot(
+      {
+        root: temporary.make("incomplete-git-inspection-"),
+        runCommand,
+        timeoutMs: 1_000,
+        onWarning: () => {},
+      },
+      async () => {},
+    ),
+  ).rejects.toThrow("Git target inspection for-each-ref failed");
+});
 
 it.each([
   { state: "unverified", expected: "did not verify repository corruption" },

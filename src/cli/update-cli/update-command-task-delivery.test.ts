@@ -146,24 +146,46 @@ it("admits cascade-owned task-delivery orphans with preservation and a durable r
   expect(recovery?.detail).toContain(directories[0]);
 });
 
-it("refuses structural damage before ledger admission", () => {
-  const f = seededOrphans();
-  createUnsafeIndexDrift(f.filename);
-  expect(f.createRun).toThrow(/integrity_check failed/);
-  expect(f.count("task_delivery_state")).toEqual({ count: 19 });
-  expect(f.count("update_runs")).toEqual({ count: 0 });
-  expect(recoveryDirectories(f.filename)).toEqual([]);
-});
-
-it("rolls back task recovery when ledger admission fails", () => {
-  const f = seededOrphans();
-  f.exec(`CREATE TRIGGER unknown_ledger_trigger
+it.each([
+  ["non-cascade", /foreign_key_check failed/, 0],
+  ["structural", /integrity_check failed/, 0],
+  ["dependent", /foreign_key_check failed/, undefined],
+  ["ledger trigger", /unknown_ledger_trigger/, 1],
+] as const)(
+  "refuses %s damage without changing ledger or task rows",
+  (damage, error, recoveryCount) => {
+    const f = seededOrphans();
+    if (damage === "non-cascade") {
+      f.exec(`PRAGMA foreign_keys = OFF;
+      CREATE TABLE unrelated_parent (id TEXT PRIMARY KEY);
+      CREATE TABLE unrelated_child (id TEXT REFERENCES unrelated_parent(id));
+      INSERT INTO unrelated_child VALUES ('missing');`);
+    } else if (damage === "structural") {
+      createUnsafeIndexDrift(f.filename);
+    } else if (damage === "dependent") {
+      f.exec(`CREATE TABLE dependent (
+    task_id TEXT REFERENCES task_delivery_state(task_id) ON DELETE CASCADE);
+    INSERT INTO dependent VALUES ('missing-task-0');`);
+    } else {
+      f.exec(`CREATE TRIGGER unknown_ledger_trigger
     BEFORE INSERT ON update_runs BEGIN SELECT RAISE(ABORT, 'reject ledger insert'); END;`);
-  expect(f.createRun).toThrow(/unknown_ledger_trigger/);
-  expect(f.count("update_runs")).toEqual({ count: 0 });
-  expect(recoveryDirectories(f.filename)).toHaveLength(1);
-  expect(f.all("PRAGMA foreign_key_check")).toHaveLength(18);
-});
+    }
+    expect(f.createRun).toThrow(error);
+    if (damage === "non-cascade" || damage === "structural") {
+      expect(f.count("task_delivery_state")).toEqual({ count: 19 });
+    }
+    expect(f.count("update_runs")).toEqual({ count: 0 });
+    if (recoveryCount !== undefined) {
+      expect(recoveryDirectories(f.filename)).toHaveLength(recoveryCount);
+    }
+    if (damage === "dependent") {
+      expect(f.all("SELECT * FROM dependent")).toEqual([{ task_id: "missing-task-0" }]);
+    }
+    if (damage === "dependent" || damage === "ledger trigger") {
+      expect(f.all("PRAGMA foreign_key_check")).toHaveLength(18);
+    }
+  },
+);
 
 it("reports repairable orphans and Doctor next action for foreign-gateway admission", () => {
   const f = seededOrphans();

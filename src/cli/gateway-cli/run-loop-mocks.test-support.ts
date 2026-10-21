@@ -279,7 +279,7 @@ vi.mock("../../cron/active-jobs.js", () => ({
 }));
 // mock-isolation: Cancellation and drain gates must not touch real cron task runs.
 vi.mock("../../cron/service/active-run-cancellation.js", () => ({
-  abortActiveCronTaskRuns: forward(() => m.abortActiveCronTaskRuns),
+  abortActiveCronTaskRuns: (reason?: string) => m.abortActiveCronTaskRuns(reason),
   retireActiveCronTaskRunTracking: () => m.retireActiveCronTaskRunTracking(),
   waitForActiveCronTaskRuns: forward(() => m.waitForActiveCronTaskRuns),
 }));

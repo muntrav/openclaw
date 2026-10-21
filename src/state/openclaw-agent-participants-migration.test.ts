@@ -25,6 +25,7 @@ const sessionKey = "agent:main:participant-migration";
 async function historicalStore(
   state: OpenClawTestState,
   entry?: { sessionId: string; updatedAt: number },
+  version = 17,
 ) {
   if (entry) {
     await captureRuntimeConfigAsyncReader()();
@@ -35,7 +36,7 @@ async function historicalStore(
   restoreEmptyV21StorageForHistoricalFixture(native);
   removeCanonicalValidationFromHistoricalAgentFixture(native);
   initial.db.exec(
-    "DROP TABLE session_participants; PRAGMA user_version = 17; UPDATE schema_meta SET schema_version = 17;",
+    `DROP TABLE session_participants; PRAGMA user_version = ${version}; UPDATE schema_meta SET schema_version = ${version};`,
   );
   return initial;
 }
@@ -184,7 +185,7 @@ describe("participant identity migration", () => {
     "refuses a v%s identity migration outside stopped-writer maintenance",
     async (version) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const { path: databasePath } = await historicalStore(state);
+        const { path: databasePath } = await historicalStore(state, undefined, version);
         closeOpenClawAgentDatabasesForTest();
         using database = openNodeSqliteDatabase(databasePath);
         expect(() =>

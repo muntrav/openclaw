@@ -96,7 +96,6 @@ it("refreshes sequence and retention facts after foreign writes and duplicate le
   expectLatest(native, [row("second", 3, 3, 3), row("foreign", 2, 2, 2), row("first", 1, 1, 1)], 5);
   await writer.register("first", { value: 99 }, 99);
   expect(native.entries()).toHaveLength(3);
-  await expect(writer.compareAndSet("foreign", { value: 999 }, null)).resolves.toBe(false);
   await expect(writer.compareAndSet("foreign", { value: 2 }, null)).resolves.toBe(true);
   native.registerLegacyMany([row("legacy", 4, 4), row("legacy", 99, 5)]);
   await writer.register("third", { value: 5 }, 5);
@@ -287,13 +286,25 @@ it("rolls back failed pruning and lets a caller-owned transaction continue", asy
   expect(store.entries().map((entry) => entry.key)).toEqual(["two", "three"]);
 });
 
-it("inserts missing keys with compare-and-set and applies retention", async () => {
+it("keeps keyed mutations atomic without changing insertion age", async () => {
   const { store, write } = fixture("upsert-test", 2);
   const writer = write();
+
   store.register("one", { value: 1 }, 1);
   store.register("two", { value: 2 }, 2);
+  store.upsert("one", { value: 3 }, 3);
+  expectLatest(store, [row("two", 2, 2, 2), row("one", 3, 3, 1)]);
+
+  await expect(writer.compareAndSet("one", { value: 3 }, { value: 4 }, 4)).resolves.toBe(true);
+  expectLatest(store, [row("two", 2, 2, 2), row("one", 4, 4, 1)]);
+
+  await expect(writer.compareAndSet("one", { value: 999 }, null)).resolves.toBe(false);
+  expectLatest(store, [row("two", 2, 2, 2), row("one", 4, 4, 1)]);
+
+  await expect(writer.compareAndSet("one", { value: 4 }, null)).resolves.toBe(true);
   await expect(writer.compareAndSet("three", null, { value: 5 }, 5)).resolves.toBe(true);
   expectLatest(store, [row("three", 5, 5, 3), row("two", 2, 2, 2)]);
+
   await expect(writer.compareAndSet("four", null, { value: 6 }, 6)).resolves.toBe(true);
   expectLatest(store, [row("four", 6, 6, 4), row("three", 5, 5, 3)]);
 });

@@ -1,11 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import {
-  MEMORY_CHUNKING_VERSION,
-  MEMORY_SEARCH_DEADLINE_CONTROL,
-} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { MEMORY_SEARCH_DEADLINE_CONTROL } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import type {
   MemoryCorpusSearchResult,
   OpenClawConfig,
@@ -16,18 +12,14 @@ import {
 } from "openclaw/plugin-sdk/memory-host-core";
 import { openOpenClawAgentDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
 import {
-  requireNativeSqliteDatabase,
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runInMemoryTestBackgroundContext } from "./memory/background-context.test-support.js";
 import * as cpuRuntime from "./memory/manager-cpu-worker-runtime.js";
-import type { MemoryIndexDatabase } from "./memory/manager-database-context.js";
-import { readMemoryDatabaseRevision } from "./memory/manager-db-kernel.js";
 import * as generationLease from "./memory/manager-index-generation-lease.js";
 import { createManagerIndexFixture } from "./memory/manager-index.test-support.js";
-import { MEMORY_INDEX_PROVENANCE_VERSION } from "./memory/manager-reindex-state.js";
 import { createMemoryGetTool, createMemorySearchTool, testing } from "./tools.js";
 
 const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./memory/index.js");
@@ -257,7 +249,6 @@ describe("memory_search real manager", () => {
       "Tell the user to run: openclaw memory status --index --agent main. Rebuilding may call the configured embedding provider and can incur provider cost.";
     const primary = await tool.execute("paused-primary", { query: "alpha" });
     expect(primary.details).toMatchObject({
-      results: [],
       disabled: true,
       unavailable: true,
       error: "index was built for model old-embed, expected new-embed",
@@ -562,230 +553,6 @@ describe("memory_search real manager", () => {
       await execution.catch(() => undefined);
       await cleanupFinished.promise;
       getSpy.mockRestore();
-    }
-  });
-
-  const query = Object.freeze({ query: "alpha", corpus: "memory" });
-  function uncachedConfig(embeddingProvider = "openai") {
-    return fixture.createConfig({
-      provider: embeddingProvider,
-      vectorEnabled: false,
-      fallback: "none",
-      batchEnabled: embeddingProvider === "batch-test",
-      cacheEnabled: false,
-    });
-  }
-
-  const indexHit = expect.objectContaining({ path: "memory/2026-01-12.md" });
-  const providerCost = expect.stringContaining("provider cost");
-  const search = async (cfg: OpenClawConfig) =>
-    (await searchTool(cfg).execute("search", query)).details;
-
-  function setVersions(db: DatabaseSync, versions: Record<string, number | undefined>) {
-    const key = "memory_index_meta_v1";
-    const row = db.prepare("SELECT value FROM memory_index_meta WHERE key = ?").get(key);
-    if (typeof row?.value !== "string") {
-      throw new Error("fixture index metadata is missing");
-    }
-    db.prepare("UPDATE memory_index_meta SET value = ? WHERE key = ?").run(
-      JSON.stringify({ ...JSON.parse(row.value), ...versions }),
-      key,
-    );
-  }
-
-  async function seedIndex(
-    storedVersions: Record<string, number | undefined>,
-    cfg = uncachedConfig(),
-  ) {
-    const manager = await indexedManager(cfg, undefined, "cli");
-    await manager.close();
-    await closeAllMemorySearchManagers();
-    const db = requireNativeSqliteDatabase(openOpenClawAgentDatabase({ agentId: "main" }).db);
-    setVersions(db, storedVersions);
-    return {
-      cfg,
-      db,
-      before: readMemoryDatabaseRevision(db),
-      embedded: fixture.provider.embedBatchCalls,
-    };
-  }
-
-  it("rebuilds missing provenance once across concurrent and repeated searches", async () => {
-    const { cfg, db, before, embedded } = await seedIndex({ provenanceVersion: undefined });
-    const tool = searchTool(cfg);
-    const responses = await Promise.all(
-      ["first", "concurrent"].map((id) => tool.execute(id, query)),
-    );
-    const result = responses[0]!;
-    expect(result.details).toMatchObject({
-      results: [indexHit],
-    });
-    expect(result.details).not.toHaveProperty("unavailable");
-    const after = readMemoryDatabaseRevision(db);
-    expect(after).toBeGreaterThan(before);
-    expect(fixture.provider.embedBatchCalls).toBe(embedded + 1);
-    for (const response of responses) {
-      expect(response.details).toHaveProperty("warning", providerCost);
-    }
-
-    const repeat = await tool.execute("provenance-current", query);
-    expect(readMemoryDatabaseRevision(db)).toBe(after);
-    expect(repeat.details).not.toHaveProperty("warning");
-    expect(fixture.provider.embedBatchCalls).toBe(embedded + 1);
-  });
-  it("keeps the rebuild cost warning when subsequent query embedding fails", async () => {
-    const { cfg, embedded } = await seedIndex({ provenanceVersion: 0 });
-    fixture.provider.beforeEmbedQuery = async () => {
-      throw new Error("synthetic query failure");
-    };
-    expect(await search(cfg)).toMatchObject({
-      unavailable: true,
-      error: expect.stringContaining("synthetic query failure"),
-      warning: providerCost,
-    });
-    expect(fixture.provider.embedBatchCalls).toBe(embedded + 1);
-  });
-
-  it("discloses search rebuilding an older empty index after a file gains content", async () => {
-    const file = path.join(fixture.paths.memory, "2026-01-12.md");
-    await fs.writeFile(file, "");
-    const { cfg, db, embedded } = await seedIndex({ provenanceVersion: 0 });
-    expect(db.prepare("SELECT count(*) AS count FROM memory_index_chunks").get()?.count).toBe(0);
-    await fs.writeFile(file, "Alpha memory added after the old empty index.");
-    expect(await search(cfg)).toMatchObject({ results: [indexHit], warning: providerCost });
-    expect(fixture.provider.embedBatchCalls).toBe(embedded + 1);
-  });
-
-  it("discloses a full retry handed to detached maintenance before embedding finishes", async () => {
-    const cfg = uncachedConfig();
-    const now = Date.now();
-    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-    let failSync = false;
-    let holdSync = false;
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
-    const acquire = createDeferred<void>();
-    const getManager = MemoryIndexManager.get.bind(MemoryIndexManager);
-    const get = vi.spyOn(MemoryIndexManager, "get").mockImplementation(async (params) => {
-      if (params.purpose === "maintenance") {
-        await acquire.promise;
-      }
-      return await getManager(params);
-    });
-    fixture.provider.beforeEmbedBatch = async () => {
-      if (failSync) {
-        throw Object.assign(new Error("HTTP 400: synthetic reindex failure"), { status: 400 });
-      }
-      if (holdSync) {
-        entered.resolve();
-        await release.promise;
-      }
-    };
-    try {
-      const manager = await indexedManager(cfg, undefined, "cli");
-      failSync = true;
-      await expect(manager.sync({ reason: "cli", force: true })).rejects.toThrow("HTTP 400");
-      failSync = false;
-      clock.mockReturnValue(now + 30_000);
-      holdSync = true;
-      const embedded = fixture.provider.embedBatchCalls;
-      const tool = searchTool(cfg);
-      expect((await tool.execute("detached-rebuild", query)).details).toMatchObject({
-        results: [indexHit],
-        warning: providerCost,
-      });
-      // The next search starts after the request notice but before the detached writer admits it.
-      const queryEntered = createDeferred<void>();
-      fixture.provider.beforeEmbedQuery = async () => {
-        queryEntered.resolve();
-        await entered.promise;
-      };
-      const concurrent = tool.execute("detached-admission", query);
-      await queryEntered.promise;
-      acquire.resolve();
-      const concurrentResult = await concurrent;
-      expect(concurrentResult.details).toHaveProperty("warning", providerCost);
-      expect(fixture.provider.embedBatchCalls).toBe(embedded);
-      release.resolve();
-      await manager.close();
-      expect(fixture.provider.embedBatchCalls).toBe(embedded + 1);
-    } finally {
-      acquire.resolve();
-      release.resolve();
-      fixture.provider.beforeEmbedQuery = null;
-      await closeAllMemorySearchManagers();
-      get.mockRestore();
-      clock.mockRestore();
-      fixture.provider.beforeEmbedBatch = null;
-    }
-  });
-
-  it("keeps the rebuild cost warning when a search deadline expires during embedding", async () => {
-    const { cfg } = await seedIndex({ provenanceVersion: 0 }, uncachedConfig("batch-test"));
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
-    fixture.provider.providerRuntimeBatchGate = release.promise;
-    fixture.provider.providerRuntimeBatchEntered = () => entered.resolve();
-    vi.useFakeTimers();
-    const execution = search(cfg);
-    try {
-      await entered.promise;
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect(await execution).toMatchObject({
-        unavailable: true,
-        warning: providerCost,
-        error: expect.stringContaining("timed out"),
-      });
-    } finally {
-      release.resolve();
-      fixture.provider.providerRuntimeBatchGate = null;
-      vi.useRealTimers();
-      await closeAllMemorySearchManagers();
-    }
-  });
-  it("keeps newer-index advice after a real failed sync without rewriting the index", async () => {
-    const cfg = uncachedConfig();
-    let calls = 0;
-    fixture.provider.beforeEmbedBatch = async () => {
-      calls += 1;
-    };
-    try {
-      const manager = await indexedManager(cfg, undefined, "cli");
-      fixture.provider.embedBatchPermanentFailure = Object.assign(
-        new Error("HTTP 400: synthetic embedding provider unavailable"),
-        { status: 400 },
-      );
-      await expect(manager.sync({ reason: "cli", force: true })).rejects.toThrow("HTTP 400");
-      const database = Reflect.get(manager, "publishedDatabase") as MemoryIndexDatabase;
-      const meta = database.facts.meta;
-      if (!meta) {
-        throw new Error("Expected the published index metadata");
-      }
-      await database.writeMetadata({
-        ...meta,
-        chunkingVersion: MEMORY_CHUNKING_VERSION + 1,
-        provenanceVersion: MEMORY_INDEX_PROVENANCE_VERSION - 1,
-      });
-      const db = database.db;
-      const before = readMemoryDatabaseRevision(db);
-      const chunks = db.prepare("SELECT * FROM memory_index_chunks ORDER BY id").all();
-      const priorCalls = calls;
-      const result = await search(cfg);
-      expect(result).toMatchObject({
-        results: [],
-        unavailable: true,
-        error: expect.stringContaining("newer OpenClaw"),
-        warning: expect.stringContaining("Previous memory sync failed: HTTP 400"),
-        action: expect.stringContaining("upgrade OpenClaw or reindex explicitly"),
-      });
-      expect(result).toHaveProperty("action", providerCost);
-      expect(manager.status().lastSyncError).toContain("HTTP 400");
-      expect(readMemoryDatabaseRevision(db)).toBe(before);
-      expect(db.prepare("SELECT * FROM memory_index_chunks ORDER BY id").all()).toEqual(chunks);
-      expect(calls).toBe(priorCalls);
-      expect(fixture.provider.embedQueryCalls).toBe(0);
-    } finally {
-      fixture.provider.embedBatchPermanentFailure = null;
     }
   });
 });

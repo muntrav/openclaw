@@ -36,7 +36,19 @@ export type GitCandidateFixture = {
   expectNoRuntimeStagingPaths: () => Promise<void>;
 };
 
-export type GitUpdateFixture = Awaited<ReturnType<typeof createGitUpdateFixture>>;
+export type GitUpdateFixture = Awaited<ReturnType<typeof createGitFixtureCheckout>> & {
+  directory: string;
+  stopped: boolean;
+  events: string[];
+  inspectionRoots: string[];
+  virtualStoreLayout: string;
+  runCommand: CommandRunner;
+  advanceRemote: () => Promise<string>;
+  writeRuntime: (root?: string, sha?: string, layout?: string) => Promise<void>;
+  validateCandidate: (candidateRoot: string) => Promise<void>;
+  beforeGitMutation: () => Promise<void>;
+  update: (opts: GitUpdateOptions) => Promise<UpdateRunResult>;
+};
 type GitUpdateOptions<T = UpdateRunnerOptions> = T extends UpdateRunnerOptions
   ? Partial<Omit<T, "runGitDoctor" | "prepareGitExposure">> &
       Pick<T, "runGitDoctor" | "prepareGitExposure">
@@ -45,7 +57,7 @@ type GitUpdateOptions<T = UpdateRunnerOptions> = T extends UpdateRunnerOptions
 export async function createGitUpdateFixture(
   directory: string,
   manifest: Record<string, unknown> = {},
-) {
+): Promise<GitUpdateFixture> {
   const checkout = await createGitFixtureCheckout(directory, manifest);
   const events: string[] = [];
   const inspectionRoots: string[] = [];
@@ -72,7 +84,7 @@ export async function createGitUpdateFixture(
     }
     return { code: 0, stdout: argv[1] === "--version" ? "12.0.0" : "", stderr: "" };
   };
-  const fixture = {
+  const fixture: GitUpdateFixture = {
     ...checkout,
     directory,
     stopped: false,

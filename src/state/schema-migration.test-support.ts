@@ -70,11 +70,11 @@ async function migrateWithOutcome(
   }
 }
 
-async function restoreScopedMigration<T>(
+async function restoreScopedMigration(
   { database, pathname, env, scope, migrate }: Migration,
   predecessor: number,
   target: number,
-  capture: () => T,
+  capture: () => unknown,
 ) {
   const before = capture();
   const beforeStatistics = statistics(database);
@@ -107,7 +107,7 @@ async function restoreScopedMigration<T>(
 type MigrationFixture = {
   database: DatabaseSync;
   migrate(outcome?: string): Promise<void>;
-  restore<T>(capture: () => T): Promise<void>;
+  restore(capture: () => unknown): Promise<void>;
 };
 
 export function migrationFixture(config: {

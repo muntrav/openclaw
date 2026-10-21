@@ -36,7 +36,8 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../../infra/restart-handoff.js", () => ({
+vi.mock("../../infra/restart-handoff.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/restart-handoff.js")>()),
   consumeGatewayRestartHandoffSync: mocks.consumeGatewayRestartHandoffSync,
 }));
 

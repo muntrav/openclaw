@@ -26,8 +26,10 @@ import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import * as runtimeUtils from "../../utils.js";
 import { VERSION } from "../../version.js";
 import { completeUpdateCommandRun } from "./update-command-run.js";
-import { maintenanceDefaults } from "./update-command-service-fixtures.test-support.js";
-import type { InstallRootTransitionFixture } from "./update-command-service-transition.test-support.js";
+import {
+  maintenanceDefaults,
+  type InstallRootTransitionFixture,
+} from "./update-command-service-fixtures.test-support.js";
 import {
   maybeRestartService,
   maybeStopManagedServiceBeforeMutableUpdate,

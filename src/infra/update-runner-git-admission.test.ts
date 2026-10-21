@@ -66,32 +66,6 @@ function snapshotTree(root: string): string[] {
     });
 }
 
-async function expectReadOnlyInspection(
-  state: ReturnType<typeof fixture>,
-  run: (options: UpdateRunnerOptions) => ReturnType<typeof state.run> = state.run,
-  reachable = true,
-) {
-  const before = snapshotTree(state.install);
-  const refusal = new Error("incompatible database");
-  const inspect = vi.fn(async (target) => {
-    expect(target).toEqual(targetDescriptor(state.target));
-    throw refusal;
-  });
-  const pending = run({
-    inspectGitTarget: inspect,
-    validateCandidate: forbidden("validate a candidate"),
-    beforeGitMutation: forbidden("mutate the installed checkout"),
-    runGitDoctor: forbidden("run Doctor"),
-  });
-  if (reachable) {
-    await expect(pending).rejects.toBe(refusal);
-  } else {
-    await expect(pending).resolves.toMatchObject({ status: "error", reason: "fetch-failed" });
-  }
-  expect(inspect).toHaveBeenCalledTimes(reachable ? 1 : 0);
-  expect(snapshotTree(state.install)).toEqual(before);
-}
-
 it.each(
   (["sha1", "sha256"] as const).flatMap((objectFormat) =>
     [false, true].map((cached) => ({ objectFormat, cached })),
@@ -367,7 +341,7 @@ it.runIf(process.platform !== "win32")(
   },
 );
 
-it.each(["reporting-rejected", "unknown"] as const)(
+it.each(["insufficient", "reporting-rejected", "unknown"] as const)(
   "checks object capacity before Gateway stop (%s)",
   async (outcomeKind) => {
     const state = fixture();
@@ -410,13 +384,22 @@ it.each(["reporting-rejected", "unknown"] as const)(
       );
     } else {
       const result = await pending;
-      expect(result.status, JSON.stringify(result)).toBe("ok");
-      expect(result.steps).toContainEqual(
-        matchingStep("git update pack capacity", {
-          exitCode: 0,
-          warnings: [expect.stringContaining("free space could not be measured")],
-        }),
-      );
+      if (outcomeKind === "unknown") {
+        expect(result.status, JSON.stringify(result)).toBe("ok");
+        expect(result.steps).toContainEqual(
+          matchingStep("git update pack capacity", {
+            exitCode: 0,
+            warnings: [expect.stringContaining("free space could not be measured")],
+          }),
+        );
+      } else {
+        expect([result.status, result.reason]).toEqual(["error", "snapshot-capacity-insufficient"]);
+        expect(result.steps).toContainEqual(
+          matchingStep("git update pack capacity", {
+            stderrTail: expect.stringContaining("0 bytes available"),
+          }),
+        );
+      }
     }
     expect(prepareMutation).toHaveBeenCalledTimes(outcomeKind === "unknown" ? 1 : 0);
     expect(state.head()).toBe(outcomeKind === "unknown" ? state.target : before);
@@ -546,6 +529,15 @@ it("records a warning when inspection cleanup fails", async () => {
     }
   }
 });
+it("restores dev upstream from cold tracking refs", async () => {
+  const state = fixture();
+  state.installedGit("checkout", "-b", "maintenance");
+  state.installedGit("branch", "-D", "main");
+  state.installedGit("update-ref", "-d", "refs/remotes/upstream.with.dots/main");
+  state.expectUpdated(await state.run({ channel: "dev" }));
+  expect(state.installedGit("rev-parse", "main@{upstream}")).toBe(state.target);
+});
+
 it.each(["stable", "dev"] as const)(
   "rechecks admission after transport, pinning target (%s)",
   async (channel) => {
@@ -619,18 +611,33 @@ it.each([
       },
       () => buildUpdateCommandRunner(),
     );
-    await expectReadOnlyInspection(
-      state,
-      (opts) =>
-        updateGitCheckout({
-          gitRoot: state.install,
-          ...captured,
-          timeoutMs: 15_000,
-          startedAt: Date.now(),
-          opts: { channel: "stable", ...opts },
-        }),
-      configured,
-    );
+    const before = snapshotTree(state.install);
+    const refused = new Error("refuse after effective-environment transport");
+    const admission = vi.fn(async (target) => {
+      expect(target).toEqual(targetDescriptor(state.target));
+      throw refused;
+    });
+    const result = updateGitCheckout({
+      gitRoot: state.install,
+      ...captured,
+      timeoutMs: 15_000,
+      startedAt: Date.now(),
+      opts: {
+        channel: "stable",
+        inspectGitTarget: admission,
+        validateCandidate: forbidden("validate a candidate"),
+        beforeGitMutation: forbidden("mutate the installed checkout"),
+        runGitDoctor: forbidden("run Doctor"),
+      },
+    });
+    if (configured) {
+      await expect(result).rejects.toBe(refused);
+      expect(admission).toHaveBeenCalledOnce();
+    } else {
+      await expect(result).resolves.toMatchObject({ status: "error", reason: "fetch-failed" });
+      expect(admission).not.toHaveBeenCalled();
+    }
+    expect(snapshotTree(state.install)).toEqual(before);
   },
 );
 
@@ -711,7 +718,15 @@ process.exit(result.status ?? 93);
   expect(state.installedGit("ls-remote", "upstream.with.dots", "refs/heads/main")).toContain(
     state.target,
   );
-  await expectReadOnlyInspection(state);
+  const before = snapshotTree(state.install);
+  const refused = new Error("stop after real SSH transport and target admission");
+  await expect(
+    state.run({
+      inspectGitTarget: async () => {
+        throw refused;
+      },
+    }),
+  ).rejects.toBe(refused);
   const calls = fs
     .readFileSync(transportLog, "utf8")
     .trim()
@@ -719,6 +734,7 @@ process.exit(result.status ?? 93);
     .map((line) => JSON.parse(line));
   expect(calls.length).toBeGreaterThanOrEqual(2);
   expect(calls.every((args) => args[0] === "-P" && args[1] === "22445")).toBe(true);
+  expect(snapshotTree(state.install)).toEqual(before);
 });
 
 it.each([
@@ -731,7 +747,15 @@ it.each([
   }
   // Unchanged content with a stale index stat cache must remain read-only too.
   fs.utimesSync(path.join(state.install, "package.json"), new Date(1000), new Date(1000));
-  await expectReadOnlyInspection(state);
+  const before = snapshotTree(state.install);
+  const refusal = new Error("incompatible database");
+  const inspect = vi.fn(async (target) => {
+    expect(target).toEqual(targetDescriptor(state.target));
+    throw refusal;
+  });
+  await expect(state.run({ inspectGitTarget: inspect })).rejects.toBe(refusal);
+  expect(inspect).toHaveBeenCalledOnce();
+  expect(snapshotTree(state.install)).toEqual(before);
   const mirror = state.calls.find((argv) => argv.includes("init"))?.at(-1);
   expect(mirror).toBeDefined();
   expect(fs.existsSync(mirror!)).toBe(false);

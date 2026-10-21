@@ -2,32 +2,39 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { fixtureReceiptClientSource } from "../../test/helpers/fixture-receipts.js";
+import { pathToFileURL } from "node:url";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import {
+  fixtureReceiptClientSource,
+  openFixtureReceiptChannel,
+  type FixtureReceiptChannel,
+} from "../../test/helpers/fixture-receipts.js";
 import { isProcessAlive } from "../../test/helpers/process-wait.js";
 import { withinTest } from "../../test/helpers/promise.js";
 import { withRuntimePreload } from "../../test/helpers/runtime-preload.js";
 import * as commands from "../process/exec.js";
-import { runUtf8CommandWithTimeout } from "../process/exec.js";
+import { runCommandBuffered, runUtf8CommandWithTimeout } from "../process/exec.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { hasErrnoCode } from "./errno.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
-import {
-  useStateReceipts,
-  createStateDatabase,
-  runStateWorker,
-  captureStateOperation as capture,
-  stateClock,
-  snapshotFixture,
-} from "./update-candidate-state-fixtures.test-support.js";
+import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { prepareUpdateCandidateStateSnapshot } from "./update-candidate-snapshot.js";
 import { readUpdateStateSchemaVersions } from "./update-candidate-state.js";
 import {
+  captureUpdateCandidateDeadline,
   inventoryUpdateCandidateStateWorker,
   materializeUpdateCandidateStateWorker,
 } from "./update-candidate-state.test-support.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
 
-const receipts = useStateReceipts();
+let receipts: FixtureReceiptChannel;
+beforeAll(async () => {
+  receipts = await openFixtureReceiptChannel();
+});
+afterAll(async () => {
+  await receipts.close();
+});
 
 // A worker can exit before its side-channel receipt arrives. Its marker is
 // published before the fault or reply that settles the operation.
@@ -64,10 +71,39 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-const createDatabase = (file: string, sql = "") =>
-  createStateDatabase(file, `PRAGMA user_version = 3; ${sql}`);
-const runWorker = (input: unknown, preload?: string, env?: NodeJS.ProcessEnv) =>
-  runStateWorker(input, { env }, preload);
+async function createDatabase(file: string, sql = ""): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const db = openNodeSqliteDatabase(file);
+  try {
+    db.exec(`PRAGMA user_version = 3; ${sql}`);
+  } finally {
+    db.close();
+  }
+}
+
+function capture<T>(operation: Promise<T>) {
+  return operation.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+}
+
+function runWorker(input: unknown, preload?: string, env?: NodeJS.ProcessEnv) {
+  const argv = [
+    process.execPath,
+    ...(preload ? ["--import", pathToFileURL(preload).href] : []),
+    ...resolveRuntimeWorkerArgv(
+      resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.updateCandidateState),
+    ),
+  ];
+  return runCommandBuffered(argv, {
+    input: JSON.stringify(input),
+    env,
+    timeoutMs: 30_000,
+    killGraceMs: 500,
+    maxOutputBytes: { stdout: 1024 * 1024, stderr: 20_000 },
+  });
+}
 
 it.each([
   { mode: "versions", cleanup: "transient", readError: false },
@@ -272,7 +308,10 @@ it.each([false, true].flatMap((legacy) => [false, true].map((expires) => ({ lega
       return inspectionResult([sharedVersion, { path: external, userVersion: 7 }]);
     });
 
-    const advanceClock = stateClock();
+    const now = Date.now.bind(Date);
+    let elapsed = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
+    const expireDeadline = captureUpdateCandidateDeadline();
     const operation = readUpdateStateSchemaVersions({ stateDir, config: {} });
     const outcome = capture(operation);
     try {
@@ -283,14 +322,14 @@ it.each([false, true].flatMap((legacy) => [false, true].map((expires) => ({ lega
         }),
       ]);
       // Modern inspection needs the external WAL bytes; legacy also needs shared's startup floor.
-      const elapsed = legacy ? 4_700_000 : 4_500_000;
-      advanceClock(elapsed);
+      elapsed = legacy ? 4_700_000 : 4_500_000;
       expect(signal.aborted).toBe(false);
       if (expires) {
         const aborted = new Promise<void>((resolve) => {
           signal.addEventListener("abort", () => resolve(), { once: true });
         });
-        advanceClock(elapsed + 400_000, true);
+        elapsed += 400_000;
+        expireDeadline();
         await aborted;
         expect(signal.aborted).toBe(true);
       }
@@ -375,6 +414,79 @@ it("keeps fleet progress below a released parent's stderr limit", async () => {
   });
 });
 
+it.runIf(process.platform !== "win32")(
+  "kills a cancelled schema worker before removing its parent-owned staging root",
+  async ({ signal }) => {
+    const cache = path.join(root, "kill-cache");
+    const cacheOwner = path.join(cache, "openclaw");
+    const pidPath = path.join(root, "hung-worker.pid");
+    const stagingPath = path.join(root, "hung-worker-staging.txt");
+    const runner = path.join(root, "hung-worker.mjs");
+    await fs.mkdir(cacheOwner, { recursive: true, mode: 0o700 });
+    await fs.writeFile(
+      runner,
+      `#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+${fixtureReceiptClientSource(receipts.endpoint)}
+// Metadata probes use the real core program; only the schema worker should hang.
+if (process.argv.includes("--eval")) {
+  process.exit(spawnSync(process.execPath, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);
+}
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+const { stagingRoot } = JSON.parse(input);
+fs.mkdirSync(path.join(stagingRoot, "partial"), { recursive: true });
+fs.writeFileSync(path.join(stagingRoot, "partial", "database.sqlite"), "partial");
+fs.writeFileSync(${JSON.stringify(stagingPath)}, stagingRoot);
+fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+process.on("SIGTERM", () => {});
+sendReceipt(${JSON.stringify(pidPath)}, "ready");
+setInterval(() => {}, 60_000);
+`,
+      { mode: 0o755 },
+    );
+    const previousCache = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CACHE_HOME = cache;
+    const controller = new AbortController();
+    const operation = readUpdateStateSchemaVersions({
+      stateDir: path.join(root, "unused-state"),
+      config: {},
+      nodeRunner: runner,
+      signal: controller.signal,
+    });
+    const outcome = operation.then(
+      () => {},
+      () => {},
+    );
+    workerSettlement = outcome;
+    try {
+      await withinTest(
+        fixtureEventBeforeSettlement(pidPath, outcome, `timeout waiting for pid in ${pidPath}`),
+        signal,
+      );
+      const pid = Number(await fs.readFile(pidPath, "utf8"));
+      const cancellation = new Error("test cancellation");
+      controller.abort(cancellation);
+      await expect(operation).rejects.toBe(cancellation);
+      // Inspection rejects only after its owned command has closed.
+      expect(isProcessAlive(pid)).toBe(false);
+      const stagingRoot = await fs.readFile(stagingPath, "utf8");
+      await expect(fs.stat(stagingRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(cacheOwner)).toEqual([]);
+    } finally {
+      controller.abort();
+      await outcome;
+      if (previousCache === undefined) {
+        delete process.env.XDG_CACHE_HOME;
+      } else {
+        process.env.XDG_CACHE_HOME = previousCache;
+      }
+    }
+  },
+);
+
 it.for(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
   "settles the actual rehearsal backup child before removing scratch on %s",
   { timeout: 20_000 },
@@ -407,14 +519,24 @@ it.for(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
       };
     `,
     );
-    const advanceClock = stateClock();
+    const now = Date.now.bind(Date);
+    let elapsed = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
+    const expireDeadline = captureUpdateCandidateDeadline();
     const controller = new AbortController();
-    const operation = snapshotFixture(root, stateDir, controller.signal, () => ({
-      ...withRuntimePreload(process.env, preload),
-      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
-      XDG_CACHE_HOME: path.join(root, "unowned-cache"),
-      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-    }));
+    const operation = prepareUpdateCandidateStateSnapshot({
+      config: {},
+      stateDir,
+      candidateRoot: root,
+      env: { TMPDIR: root },
+      workerEnv: () => ({
+        ...withRuntimePreload(process.env, preload),
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+        XDG_CACHE_HOME: path.join(root, "unowned-cache"),
+        OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+      }),
+      signal: controller.signal,
+    });
     const outcome = capture(operation);
     workerSettlement = outcome;
     try {
@@ -430,7 +552,8 @@ it.for(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
       if (failure === "cancel" || failure === "cooperative-cancel") {
         controller.abort(new Error("cancel rehearsal proof"));
       } else if (failure === "deadline") {
-        advanceClock(600_000, true);
+        elapsed = 600_000;
+        expireDeadline();
       }
       const result = await outcome;
       expect(result).toMatchObject({ error: expect.any(Error) });
