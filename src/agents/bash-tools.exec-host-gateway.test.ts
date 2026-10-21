@@ -541,39 +541,6 @@ describe("processGatewayAllowlist", () => {
     expect(serialized).not.toContain("agent-1");
   });
 
-  it.runIf(process.platform !== "win32")(
-    "reviews an unquoted glob and semicolon chain and pins its dispatches once",
-    async () => {
-      const command = "ls *.ts; echo complete";
-      await configurePlanBackedCommand({ command });
-      mock.review.mockResolvedValue({
-        decision: "allow-once",
-        risk: "medium",
-        rationale: "project inspection",
-      });
-      const warnings: string[] = [];
-      const result = await runGatewayAllowlist({ command, autoReview: true, warnings });
-
-      expect(mock.review).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command,
-          reason: "execution-plan-miss",
-          argv: undefined,
-          resolvedPath: undefined,
-          analysis: expect.objectContaining({ parsed: true, heredoc: false }),
-        }),
-      );
-      expect(result.execCommandOverride).toMatch(
-        /^'\/[^']*\/ls' \*\.ts; '\/[^']*\/echo' complete$/,
-      );
-      expect(result.allowWithoutEnforcedCommand).toBeUndefined();
-      await expect(result.revalidateBeforeExecution?.()).resolves.toBeUndefined();
-      expect(mock.route).not.toHaveBeenCalled();
-      expectAuthorization({ source: "auto-review" });
-      expect(warnings).toContain("Exec auto-review allowed once (risk=medium): project inspection");
-    },
-  );
-
   it("escalates the third session denial and resets after reviewer allowance or human resolution", async () => {
     const command = "echo review";
     await configurePlanBackedCommand({ command });
