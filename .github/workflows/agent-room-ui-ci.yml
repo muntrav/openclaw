@@ -1,0 +1,48 @@
+name: Agent Room UI CI
+
+on:
+  push:
+    branches:
+      - feature/agent-room-ui-latest
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-room-ui-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  control-ui:
+    name: Control UI typecheck, format, and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NODE_VERSION: "24.21.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Typecheck Control UI
+        run: pnpm tsgo:ui
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Build Control UI
+        run: pnpm ui:build
