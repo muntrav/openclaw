@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, lazy, Loading, onCleanup, Show } from "solid-js";
 import { Icon } from "../../components/solid/icon.tsx";
 import { formatUiError } from "../../lib/format-error.ts";
 import { t } from "../../lib/reactive/i18n.ts";
@@ -11,6 +11,10 @@ import {
 } from "./chat-provider-review.ts";
 import { isTerminalFailureChatSendAck, normalizeChatSendAck } from "./chat-send-ack.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
+
+const ProviderReviewModal = lazy(() => import("../../components/modal-dialog.ts"), {
+  export: "ModalDialog",
+});
 
 type ReviewBinding = {
   state: ChatHost;
@@ -189,7 +193,7 @@ export function createChatProviderReview(deps: {
       }
       update(current, { loading: true });
       try {
-        await import("../../components/modal-dialog.ts");
+        await ProviderReviewModal.preload();
         update(current, { open: true });
       } catch (error) {
         update(current, { error: formatUiError(error) });
@@ -328,98 +332,100 @@ export function ChatProviderReviewDialog(props: ProviderReviewViewProps) {
           review.canContinue &&
           Boolean(review.explanation?.trim() && review.continuationMessage?.trim());
         return (
-          <openclaw-modal-dialog
-            prop:initialFocus={() => closeButton}
-            label={t("chat.providerReview.review")}
-            onModal-cancel={() => props.owner.close()}
-          >
-            <section class="exec-approval-card chat-provider-review-dialog">
-              <h2 class="exec-approval-title">
-                {t(
-                  canContinue
-                    ? "chat.providerReview.pausedTitle"
-                    : "chat.providerReview.stoppedTitle",
-                )}
-              </h2>
-              <div class="chat-provider-review-dialog__content">
-                {canContinue ? (
-                  <>
-                    <h3>{t("chat.providerReview.continuationTitle")}</h3>
-                    <p>{t("chat.providerReview.continuationBody")}</p>
-                    <blockquote class="chat-provider-review-dialog__text">
-                      {review.continuationMessage}
-                    </blockquote>
-                  </>
-                ) : (
-                  <p>{t("chat.providerReview.noContinuation")}</p>
-                )}
-                <h3>{t("chat.providerReview.findings")}</h3>
-                <div class="chat-provider-review-dialog__text">{review.explanation}</div>
-                <p>
+          <Loading>
+            <ProviderReviewModal
+              initialFocus={() => closeButton}
+              label={t("chat.providerReview.review")}
+              onModal-cancel={() => props.owner.close()}
+            >
+              <section class="exec-approval-card chat-provider-review-dialog">
+                <h2 class="exec-approval-title">
                   {t(
                     canContinue
-                      ? "chat.providerReview.queueHelp"
-                      : "chat.providerReview.queueStopped",
+                      ? "chat.providerReview.pausedTitle"
+                      : "chat.providerReview.stoppedTitle",
                   )}
-                </p>
-                {view().error ? (
-                  <p class="callout danger" role="alert">
-                    {view().error}
-                  </p>
-                ) : null}
-                {view().submitted && !view().error ? (
-                  <p role="status">
+                </h2>
+                <div class="chat-provider-review-dialog__content">
+                  {canContinue ? (
+                    <>
+                      <h3>{t("chat.providerReview.continuationTitle")}</h3>
+                      <p>{t("chat.providerReview.continuationBody")}</p>
+                      <blockquote class="chat-provider-review-dialog__text">
+                        {review.continuationMessage}
+                      </blockquote>
+                    </>
+                  ) : (
+                    <p>{t("chat.providerReview.noContinuation")}</p>
+                  )}
+                  <h3>{t("chat.providerReview.findings")}</h3>
+                  <div class="chat-provider-review-dialog__text">{review.explanation}</div>
+                  <p>
                     {t(
-                      view().refreshing
-                        ? "chat.providerReview.checkingStatus"
-                        : "chat.providerReview.waiting",
+                      canContinue
+                        ? "chat.providerReview.queueHelp"
+                        : "chat.providerReview.queueStopped",
                     )}
                   </p>
-                ) : null}
-              </div>
-              <openclaw-modal-actions class="exec-approval-actions">
-                <button
-                  ref={(element) => {
-                    closeButton = element;
-                  }}
-                  type="button"
-                  class="btn"
-                  autofocus
-                  onClick={() => props.owner.close()}
-                >
-                  {t("common.close")}
-                </button>
-                {view().submitted ? (
+                  {view().error ? (
+                    <p class="callout danger" role="alert">
+                      {view().error}
+                    </p>
+                  ) : null}
+                  {view().submitted && !view().error ? (
+                    <p role="status">
+                      {t(
+                        view().refreshing
+                          ? "chat.providerReview.checkingStatus"
+                          : "chat.providerReview.waiting",
+                      )}
+                    </p>
+                  ) : null}
+                </div>
+                <openclaw-modal-actions class="exec-approval-actions">
                   <button
+                    ref={(element) => {
+                      closeButton = element;
+                    }}
                     type="button"
                     class="btn"
-                    disabled={view().refreshing}
-                    onClick={() => props.owner.refresh()}
+                    autofocus
+                    onClick={() => props.owner.close()}
                   >
-                    {t(
-                      view().refreshing
-                        ? "chat.providerReview.checkingStatus"
-                        : "chat.providerReview.checkStatus",
-                    )}
+                    {t("common.close")}
                   </button>
-                ) : null}
-                {canContinue ? (
-                  <button
-                    type="button"
-                    class="btn primary"
-                    disabled={!view().canWrite || view().pending || view().submitted}
-                    onClick={() => void props.owner.acknowledge()}
-                  >
-                    {t(
-                      view().pending && !view().submitted
-                        ? "chat.providerReview.continuing"
-                        : "chat.providerReview.acknowledge",
-                    )}
-                  </button>
-                ) : null}
-              </openclaw-modal-actions>
-            </section>
-          </openclaw-modal-dialog>
+                  {view().submitted ? (
+                    <button
+                      type="button"
+                      class="btn"
+                      disabled={view().refreshing}
+                      onClick={() => props.owner.refresh()}
+                    >
+                      {t(
+                        view().refreshing
+                          ? "chat.providerReview.checkingStatus"
+                          : "chat.providerReview.checkStatus",
+                      )}
+                    </button>
+                  ) : null}
+                  {canContinue ? (
+                    <button
+                      type="button"
+                      class="btn primary"
+                      disabled={!view().canWrite || view().pending || view().submitted}
+                      onClick={() => void props.owner.acknowledge()}
+                    >
+                      {t(
+                        view().pending && !view().submitted
+                          ? "chat.providerReview.continuing"
+                          : "chat.providerReview.acknowledge",
+                      )}
+                    </button>
+                  ) : null}
+                </openclaw-modal-actions>
+              </section>
+            </ProviderReviewModal>
+          </Loading>
         );
       }}
     </Show>
