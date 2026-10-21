@@ -112,6 +112,36 @@ type ExecuteSlashCommand = typeof executeSlashCommand;
 type TestChatHost = ReturnType<typeof makeChatHost>;
 
 const historyBudget = { limit: 80, maxBytes: 256 * 1024, toolResultMaxChars: 2_000 };
+const storageError =
+  "Could not store this message for reconnect. Free browser storage or reconnect before sending.";
+
+function admitItem(
+  host: TestChatHost,
+  item: ChatQueueItem,
+  sessionKey = host.sessionKey,
+  agentId?: string,
+) {
+  const admission = captureChatOutboxAdmission(host, sessionKey, agentId);
+  expect(admitQueuedMessageForSession(host, admission, item)).toBe(true);
+}
+
+function wireAttachments(
+  attachments: ReturnType<typeof createDeliveryAttachmentBatch>["attachments"],
+  dataUrls: string[],
+) {
+  return attachments.map((attachment, index) => ({
+    type: attachment.mimeType.startsWith("image/") ? "image" : "file",
+    mimeType: attachment.mimeType,
+    fileName: attachment.fileName,
+    content: dataUrls[index]!.split(",")[1],
+  }));
+}
+
+function nextMacrotask() {
+  return new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+}
 
 function sendAck(params: unknown, label: string, status: string, messageSeq?: number) {
   return {
@@ -210,11 +240,7 @@ function registerTextAttachment(id: string, text: string, fileName?: string) {
 }
 
 function installQuotaExceededStorage(): void {
-  const storage = createStorageMock();
-  vi.spyOn(storage, "setItem").mockImplementation(() => {
-    throw new DOMException("quota exceeded", "QuotaExceededError");
-  });
-  vi.stubGlobal("sessionStorage", storage);
+  rejectStorageWritesWhen(() => true);
 }
 
 function rejectStorageWritesWhen(shouldReject: () => boolean) {
@@ -452,9 +478,7 @@ describe("refreshChat", () => {
       awaitHistory: true,
       scheduleScroll: false,
     });
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
+    await nextMacrotask();
 
     expect(host.chatRunId).toBe(runId);
     expect(host.chatStream).toBe("Still working after navigation.");
@@ -490,9 +514,7 @@ describe("refreshChat", () => {
 
     startup.resolve({ messages: [], sessionInfo: routed });
     await refresh;
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
+    await nextMacrotask();
 
     expectItems(host.sessions.state.result?.sessions, { key, archived: true });
   });
@@ -779,9 +801,7 @@ describe("refreshChat", () => {
     admitHostQueueItems(host);
 
     await refreshPageChat(asChatPageHost(host), { scheduleScroll: false });
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
+    await nextMacrotask();
 
     expect(requestCalls(host.request, "chat.send")).toHaveLength(0);
     expectItems(host.chatQueue, restoredQueue[0]);
@@ -1559,8 +1579,7 @@ describe("handleSendChat", () => {
     const storage = createStorageMock();
     vi.stubGlobal("sessionStorage", storage);
     const host = makeChatHost({ requestHandlers: {}, chatQueue: [original] });
-    const admission = captureChatOutboxAdmission(host, original.sessionKey);
-    expect(admitQueuedMessageForSession(host, admission, original)).toBe(true);
+    admitItem(host, original, original.sessionKey);
     const getItem = vi.spyOn(storage, "getItem").mockImplementation(() => {
       throw new DOMException("storage unavailable", "SecurityError");
     });
@@ -1962,8 +1981,7 @@ describe("handleSendChat", () => {
       createdAt: 2,
       sessionKey: inactiveSessionKey,
     });
-    const inactiveAdmission = captureChatOutboxAdmission(host, inactiveSessionKey);
-    expect(admitQueuedMessageForSession(host, inactiveAdmission, inactiveItem)).toBe(true);
+    admitItem(host, inactiveItem, inactiveSessionKey);
     const resume = resumeStoredChatOutboxes(host);
 
     await waitForFast(() => expect(sentSessions).toContain(inactiveSessionKey));
@@ -1984,8 +2002,7 @@ describe("handleSendChat", () => {
     const item = createQueuedLocalCommand("shared-local-command", "/think high");
     const firstHost = makeChatHost({ client, chatQueue: [item] });
     const secondHost = makeChatHost({ client, chatQueue: [{ ...item }] });
-    const admission = captureChatOutboxAdmission(firstHost, firstHost.sessionKey);
-    expect(admitQueuedMessageForSession(firstHost, admission, item)).toBe(true);
+    admitItem(firstHost, item);
     firstHost.sessionKey = "agent:main:inactive";
     secondHost.connectionEpoch = 7;
 
@@ -2011,8 +2028,7 @@ describe("handleSendChat", () => {
     const stopEditing = chatOutboxOwner(editing).subscribe(editing);
     const stopPeer = chatOutboxOwner(peer).subscribe(peer);
     try {
-      const admission = captureChatOutboxAdmission(editing, editing.sessionKey);
-      expect(admitQueuedMessageForSession(editing, admission, item)).toBe(true);
+      admitItem(editing, item);
       expect(beginQueuedMessageEdit(editing, item.id)).toBe("started");
       const originalOwner = client.recoveryScope;
       const recovery = vi
@@ -2268,18 +2284,8 @@ describe("handleSendChat", () => {
       connectionEpoch: 1,
       pendingSessionMessageReloadSessionKey: null,
     });
-    const selectedAdmission = captureChatOutboxAdmission(
-      host,
-      selected.sessionKey,
-      selected.agentId,
-    );
-    expect(admitQueuedMessageForSession(host, selectedAdmission, selected)).toBe(true);
-    const defaultAgentAdmission = captureChatOutboxAdmission(
-      host,
-      defaultAgent.sessionKey,
-      defaultAgent.agentId,
-    );
-    expect(admitQueuedMessageForSession(host, defaultAgentAdmission, defaultAgent)).toBe(true);
+    admitItem(host, selected, selected.sessionKey, selected.agentId);
+    admitItem(host, defaultAgent, defaultAgent.sessionKey, defaultAgent.agentId);
 
     expect(
       handlePageGatewayEvent(asChatPageHost(host), {
@@ -2352,8 +2358,7 @@ describe("handleSendChat", () => {
       });
     }
     cacheEmptyChatSnapshot(inactive, item.sessionKey);
-    const admission = captureChatOutboxAdmission(visible, item.sessionKey);
-    expect(admitQueuedMessageForSession(visible, admission, item)).toBe(true);
+    admitItem(visible, item, item.sessionKey);
     const event = {
       event: "chat",
       payload: {
@@ -2415,8 +2420,7 @@ describe("handleSendChat", () => {
       },
       chatQueue: [item],
     });
-    const admission = captureChatOutboxAdmission(host, host.sessionKey);
-    expect(admitQueuedMessageForSession(host, admission, item)).toBe(true);
+    admitItem(host, item);
     let failedClaims = 0;
     vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
       if (value.includes(item.id) && value.includes('"unconfirmed"') && failedClaims === 0) {
@@ -2464,10 +2468,8 @@ describe("handleSendChat", () => {
       },
       chatQueue: [item, following],
     });
-    const admission = captureChatOutboxAdmission(host, host.sessionKey);
-    expect(admitQueuedMessageForSession(host, admission, item)).toBe(true);
-    const followingAdmission = captureChatOutboxAdmission(host, host.sessionKey);
-    expect(admitQueuedMessageForSession(host, followingAdmission, following)).toBe(true);
+    admitItem(host, item);
+    admitItem(host, following);
 
     await resumeStoredChatOutboxes(host);
 
@@ -2537,10 +2539,8 @@ describe("handleSendChat", () => {
       },
       chatQueue: [clear, successor],
     });
-    const clearAdmission = captureChatOutboxAdmission(host, host.sessionKey);
-    expect(admitQueuedMessageForSession(host, clearAdmission, clear)).toBe(true);
-    const successorAdmission = captureChatOutboxAdmission(host, host.sessionKey);
-    expect(admitQueuedMessageForSession(host, successorAdmission, successor)).toBe(true);
+    admitItem(host, clear);
+    admitItem(host, successor);
     vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
       const successorIndex = value.indexOf(`"id":"${successor.id}"`);
       const successorRecord =
@@ -2631,9 +2631,7 @@ describe("handleSendChat", () => {
       sendState: "sending",
       text: "keep until durable retirement succeeds",
     });
-    expect(host.lastError).toBe(
-      "Could not store this message for reconnect. Free browser storage or reconnect before sending.",
-    );
+    expect(host.lastError).toBe(storageError);
     expect(host.applySettings).not.toHaveBeenCalled();
   });
 
@@ -2677,9 +2675,7 @@ describe("handleSendChat", () => {
       sendState: "waiting-reconnect",
     });
     expect(host.chatReplyTarget).toBeNull();
-    expect(host.lastError).toBe(
-      "Could not store this message for reconnect. Free browser storage or reconnect before sending.",
-    );
+    expect(host.lastError).toBe(storageError);
 
     await resumeStoredChatOutboxes(host);
     expect(requestCalls(host.request, "chat.send")).toHaveLength(1);
@@ -2744,9 +2740,7 @@ describe("handleSendChat", () => {
     expect(host.chatReplyTarget).toEqual(replyTarget);
     expect(host.chatQueue).toStrictEqual([]);
     expect(host.chatRunId).toBeNull();
-    expect(host.lastError).toBe(
-      "Could not store this message for reconnect. Free browser storage or reconnect before sending.",
-    );
+    expect(host.lastError).toBe(storageError);
   });
 
   it.each([
@@ -2902,8 +2896,7 @@ describe("handleSendChat", () => {
     const stopSource = chatOutboxOwner(source).subscribe(source);
     let stopRecovered = () => {};
     try {
-      const admission = captureChatOutboxAdmission(source, source.sessionKey, item.agentId);
-      expect(admitQueuedMessageForSession(source, admission, item)).toBe(true);
+      admitItem(source, item, source.sessionKey, item.agentId);
       vi.spyOn(outboxPayloadStore, "writeOutboxPayload").mockResolvedValueOnce({
         status: "failed",
         reason,
@@ -2936,12 +2929,7 @@ describe("handleSendChat", () => {
       const sends = requestCalls(request, "chat.send");
       expect(sends).toHaveLength(1);
       expect(requireRecord(sends[0]?.[1], "migration retry payload").attachments).toEqual(
-        attachments.map((attachment, index) => ({
-          type: attachment.mimeType.startsWith("image/") ? "image" : "file",
-          mimeType: attachment.mimeType,
-          fileName: attachment.fileName,
-          content: dataUrls[index]!.split(",")[1],
-        })),
+        wireAttachments(attachments, dataUrls),
       );
     } finally {
       stopRecovered();
@@ -3017,12 +3005,7 @@ describe("handleSendChat", () => {
         expect(sends.map((params) => params.message)).toEqual(expected);
         if (action !== "remove") {
           expect(sends.find((params) => params.message === "attachment A")?.attachments).toEqual(
-            attachments.map((attachment, index) => ({
-              type: attachment.mimeType.startsWith("image/") ? "image" : "file",
-              mimeType: attachment.mimeType,
-              fileName: attachment.fileName,
-              content: dataUrls[index]!.split(",")[1],
-            })),
+            wireAttachments(attachments, dataUrls),
           );
         }
         expect(listStoredChatOutboxes(host)).toEqual([]);
@@ -3106,14 +3089,7 @@ describe("handleSendChat", () => {
         expect(sends).toHaveLength(2);
         const resent = requireRecord(sends[1]?.[1], "same-id recovered attachment payload");
         expect(resent.idempotencyKey).toBe(original.sendRunId);
-        expect(resent.attachments).toEqual(
-          attachments.map((attachment, index) => ({
-            type: attachment.mimeType.startsWith("image/") ? "image" : "file",
-            mimeType: attachment.mimeType,
-            fileName: attachment.fileName,
-            content: dataUrls[index]!.split(",")[1],
-          })),
-        );
+        expect(resent.attachments).toEqual(wireAttachments(attachments, dataUrls));
       } finally {
         stopRecovered();
         stopSource();
@@ -3241,9 +3217,7 @@ describe("handleSendChat", () => {
       sendAttempts: 1,
       sendState: "waiting-reconnect",
     });
-    expect(host.lastError).toBe(
-      "Could not store this message for reconnect. Free browser storage or reconnect before sending.",
-    );
+    expect(host.lastError).toBe(storageError);
   });
 
   it("restores an offline local command when durable admission fails", async () => {
@@ -3261,9 +3235,7 @@ describe("handleSendChat", () => {
     expect(host.chatMessage).toBe("/think high");
     expect(host.chatReplyTarget).toEqual(replyTarget);
     expect(host.chatQueue).toStrictEqual([]);
-    expect(host.lastError).toBe(
-      "Could not store this message for reconnect. Free browser storage or reconnect before sending.",
-    );
+    expect(host.lastError).toBe(storageError);
   });
 
   it("retains cold-offline attachments until a recovery owner is known", async () => {
@@ -3323,9 +3295,7 @@ describe("handleSendChat", () => {
     });
     expect(host.chatQueue[0]?.sendAttempts).toBeUndefined();
     expect(requestCalls(host.request, "chat.send")).toHaveLength(0);
-    expect(host.lastError).toBe(
-      "Could not store this message for reconnect. Free browser storage or reconnect before sending.",
-    );
+    expect(host.lastError).toBe(storageError);
   });
 
   it.each(["waiting-reconnect", "unconfirmed"] as const)(
@@ -3364,11 +3334,11 @@ describe("handleSendChat", () => {
   );
 
   it.each([
-    { correlation: "completed run", active: false, retry: false },
-    { correlation: "completed run during explicit retry", active: false, retry: true },
+    { correlation: "completed run", retry: false },
+    { correlation: "completed run during explicit retry", retry: true },
   ])(
     "retains reconnect payload with only $correlation correlation until consumption",
-    async ({ active, retry }) => {
+    async ({ retry }) => {
       const { attachments } = createDeliveryAttachmentBatch();
       const preview = createDeferred();
       let pendingPreview: ReturnType<typeof outboxPayloadStore.readOutboxPayload> | undefined;
@@ -3390,9 +3360,9 @@ describe("handleSendChat", () => {
               ? [{ runId, state: "consumed", consumedByEventId: "persisted-user" }]
               : [],
             sessionInfo: row("agent:main", {
-              hasActiveRun: active,
-              status: active ? "running" : "done",
-              ...(active ? { activeRunIds: [runId] } : { lastRunId: runId }),
+              hasActiveRun: false,
+              status: "done",
+              lastRunId: runId,
             }),
           };
         },
@@ -4070,8 +4040,7 @@ describe("handleSendChat", () => {
       chatQueue: [original],
       sessionKey: original.sessionKey,
     });
-    const originalAdmission = captureChatOutboxAdmission(host, host.sessionKey, original.agentId);
-    expect(admitQueuedMessageForSession(host, originalAdmission, original)).toBe(true);
+    admitItem(host, original, host.sessionKey, original.agentId);
 
     const sending = steerQueuedChatMessage(host, original.id);
     await waitForFast(() => expectRpc(host.request, "chat.send"));
