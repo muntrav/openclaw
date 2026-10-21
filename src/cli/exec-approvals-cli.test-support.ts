@@ -6,25 +6,10 @@ import { applyExecApprovalsUpdate } from "../infra/exec-approvals-mutation.kerne
 import type { ExecApprovalsSnapshot } from "../infra/exec-approvals.js";
 import { registerExecApprovalsCli } from "./exec-approvals-cli.js";
 
-const mocks = vi.hoisted(() => {
-  const runtimeErrors: string[] = [];
-  const stringifyArgs = (args: unknown[]) => args.map((value) => String(value)).join(" ");
+const mocks = await vi.hoisted(async () => {
+  const { createCliRuntimeMock } = await import("./test-runtime-mock.js");
+  const { defaultRuntime, runtimeErrors } = createCliRuntimeMock(vi);
   const readBestEffortConfig = vi.fn(async () => ({}));
-  const defaultRuntime = {
-    log: vi.fn(),
-    error: vi.fn((...args: unknown[]) => {
-      runtimeErrors.push(stringifyArgs(args));
-    }),
-    writeStdout: vi.fn((value: string) => {
-      defaultRuntime.log(value.endsWith("\n") ? value.slice(0, -1) : value);
-    }),
-    writeJson: vi.fn((value: unknown, space = 2) => {
-      defaultRuntime.log(JSON.stringify(value, null, space > 0 ? space : undefined));
-    }),
-    exit: vi.fn((code: number) => {
-      throw new Error(`__exit__:${code}`);
-    }),
-  };
   return {
     callGatewayFromCli: vi.fn(
       async (
@@ -35,16 +20,7 @@ const mocks = vi.hoisted(() => {
       ): Promise<unknown> => {
         if (method.endsWith(".get")) {
           if (method === "config.get") {
-            return {
-              config: {
-                tools: {
-                  exec: {
-                    security: "full",
-                    ask: "off",
-                  },
-                },
-              },
-            };
+            return { config: { tools: { exec: { security: "full", ask: "off" } } } };
           }
           const snapshot = {
             path: "/tmp/exec-approvals.json",
