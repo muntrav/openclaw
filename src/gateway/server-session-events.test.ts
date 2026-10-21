@@ -338,88 +338,62 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
     },
   );
 
-  it("validates a committed custom-store owner without exposing private identity", async () => {
-    loadAccessorSessionEntryReadOnlyMock.mockReturnValue({
-      sessionId: "sess-main",
-      lifecycleRevision: "current-revision",
-      updatedAt: 1,
-    });
-    loadGatewaySessionEntryReadOnlyMock.mockReturnValue({
-      entry: {
-        sessionId: "sess-main",
-        lifecycleRevision: "unrelated-default-revision",
-        updatedAt: 1,
-      },
-      storePath: "/tmp/default-lifecycle-sessions.json",
-    });
-    const { broadcastToConnIds, handler } = createHandler(false);
-
-    await handler({
-      target: transcriptTarget("/tmp/current-lifecycle-sessions.json"),
-      lifecycleRevision: "current-revision",
-      message: { role: "user", content: [{ type: "text", text: "current prompt" }] },
-      messageId: "message-current-lifecycle",
-      messageSeq: 1,
-    });
-
-    expect(broadcastToConnIds).toHaveBeenCalledOnce();
-    expect(loadAccessorSessionEntryReadOnlyMock).toHaveBeenCalledWith({
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      storePath: "/tmp/current-lifecycle-sessions.json",
-    });
-    expect(loadGatewaySessionEntryReadOnlyMock).not.toHaveBeenCalled();
-    expectBroadcast(broadcastToConnIds, {
-      sessionKey: "agent:main:main",
-      messageId: "message-current-lifecycle",
-      messageSeq: 1,
-    });
-    const payload = broadcastToConnIds.mock.calls[0]?.[1];
-    expectAbsentFields(payload, "lifecycleRevision storePath target.storePath");
-  });
-
-  it("keeps committed messages visible when the current owner has no legacy revision", async () => {
-    loadAccessorSessionEntryReadOnlyMock.mockReturnValue({
-      sessionId: "sess-main",
-      updatedAt: 1,
-    });
-    const { broadcastToConnIds, handler } = createHandler(false);
-
-    await handler({
-      target: transcriptTarget("/tmp/revisionless-owner-sessions.json"),
-      lifecycleRevision: "committed-revision",
-      message: { role: "user", content: [{ type: "text", text: "revisionless owner" }] },
-      messageId: "revisionless-owner-message",
-      messageSeq: 1,
-    });
-
-    expect(broadcastToConnIds).toHaveBeenCalledOnce();
-    expectBroadcast(broadcastToConnIds, {
-      sessionKey: "agent:main:main",
-      messageId: "revisionless-owner-message",
-      messageSeq: 1,
-    });
-  });
-
-  it("preserves revisionless transcript updates when ownership is unavailable", async () => {
-    readSessionMessageByIdAsyncMock.mockResolvedValueOnce(
-      storedMessage("legacy-lifecycle-message", 3),
-    );
-    const { broadcastToConnIds, handler } = createHandler(false);
-
-    await handler({
-      target: transcriptTarget("/tmp/legacy-lifecycle-sessions.json"),
-      message: { role: "user", content: [{ type: "text", text: "legacy prompt" }] },
-      messageId: "legacy-lifecycle-message",
-    });
-
-    expect(broadcastToConnIds).toHaveBeenCalledOnce();
-    expectBroadcast(broadcastToConnIds, {
-      sessionKey: "agent:main:main",
-      messageId: "legacy-lifecycle-message",
-      messageSeq: 3,
-    });
-  });
+  it.each([
+    ["current-lifecycle", "current-revision", "message-current-lifecycle", "current prompt"],
+    [
+      "revisionless-owner",
+      "committed-revision",
+      "revisionless-owner-message",
+      "revisionless owner",
+    ],
+    ["legacy-lifecycle", undefined, "legacy-lifecycle-message", "legacy prompt"],
+  ] as const)(
+    "publishes the %s custom-store message without private identity",
+    async (kind, lifecycleRevision, messageId, text) => {
+      const current = kind === "current-lifecycle";
+      const messageSeq = lifecycleRevision ? 1 : 3;
+      const storePath = `/tmp/${kind}-sessions.json`;
+      if (lifecycleRevision) {
+        loadAccessorSessionEntryReadOnlyMock.mockReturnValue({
+          sessionId: "sess-main",
+          updatedAt: 1,
+          ...(current ? { lifecycleRevision } : {}),
+        });
+      }
+      if (current) {
+        loadGatewaySessionEntryReadOnlyMock.mockReturnValue({
+          entry: {
+            sessionId: "sess-main",
+            lifecycleRevision: "unrelated-default-revision",
+            updatedAt: 1,
+          },
+          storePath: "/tmp/default-lifecycle-sessions.json",
+        });
+      }
+      readSessionMessageByIdAsyncMock.mockResolvedValueOnce(storedMessage(messageId, messageSeq));
+      const { broadcastToConnIds, handler } = createHandler(false);
+      await handler({
+        target: transcriptTarget(storePath),
+        ...(lifecycleRevision ? { lifecycleRevision, messageSeq } : {}),
+        message: { role: "user", content: [{ type: "text", text }] },
+        messageId,
+      });
+      expect(broadcastToConnIds).toHaveBeenCalledOnce();
+      expectBroadcast(broadcastToConnIds, { sessionKey: "agent:main:main", messageId, messageSeq });
+      if (current) {
+        expect(loadAccessorSessionEntryReadOnlyMock).toHaveBeenCalledWith({
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          storePath,
+        });
+        expect(loadGatewaySessionEntryReadOnlyMock).not.toHaveBeenCalled();
+        expectAbsentFields(
+          broadcastToConnIds.mock.calls[0]?.[1],
+          "lifecycleRevision storePath target.storePath",
+        );
+      }
+    },
+  );
 
   it("carries terminal assistant run ownership while plugin finalization keeps the run active", async () => {
     // before_agent_finalize hooks run after the assistant transcript write but

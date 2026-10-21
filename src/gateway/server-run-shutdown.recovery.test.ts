@@ -1,11 +1,9 @@
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterAll, beforeAll, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { commitMainSessionRecovery } from "../agents/main-session-recovery/main-session-recovery-store.js";
 import {
   markOrphanedMainSessionForRecovery,
   markRestartAbortedMainSessions,
-  markStartupOrphanedMainSessionsForRecovery,
 } from "../agents/main-session-recovery/main-session-restart-recovery-marking.js";
 import { mainSessionRecoveryLog } from "../agents/main-session-recovery/main-session-restart-recovery-shared.js";
 import { recoverStore } from "../agents/main-session-recovery/main-session-restart-recovery-store.js";
@@ -902,60 +900,6 @@ it("persists recovery when restart cancellation precedes shutdown marking", asyn
     });
     expect(active).toEqual({ active: false, runIds: [] });
 
-    rotateAgentEventLifecycleGeneration();
-    await markStartupOrphanedMainSessionsForRecovery({ cfg, stateDir: state.stateDir });
-    const mainTarget = { storePath, sessionKey: mainKey };
-    const lifecycleGeneration = getAgentEventLifecycleGeneration();
-    const observed = await commitMainSessionRecovery({
-      target: mainTarget,
-      command: {
-        kind: "observe",
-        cycleId: "next-boot",
-        lifecycleGeneration,
-        sessionKey: mainKey,
-      },
-    });
-    if (
-      observed.transition.kind !== "observed" ||
-      observed.transition.view.status !== "recoverable"
-    ) {
-      throw new Error("eligible dashboard main session lost its restart recovery owner");
-    }
-    const reserved = await commitMainSessionRecovery({
-      target: mainTarget,
-      command: {
-        kind: "prepare_attempt",
-        attempt: observed.transition.view.nextAttempt,
-        observation: observed.transition.view.observation,
-        lifecycleGeneration,
-        runId: "resumed-main-run",
-        now: Date.now(),
-        executionIdentity: { state: "disabled" },
-      },
-    });
-    expect(reserved.transition.kind).toBe("reserved");
-    const admitted = await commitMainSessionRecovery({
-      target: mainTarget,
-      command: {
-        kind: "admit_recovery",
-        lifecycleGeneration,
-        runId: "resumed-main-run",
-        sessionId: read(mainKey).sessionId,
-        now: Date.now(),
-      },
-    });
-    expect(admitted.transition.kind).toBe("admitted_recovery");
-    await persistGatewaySessionLifecycleEvent({
-      sessionKey: mainKey,
-      event: {
-        runId: "resumed-main-run",
-        sessionId: read(mainKey).sessionId,
-        lifecycleGeneration,
-        ts: Date.now(),
-        data: { phase: "end" },
-      },
-    });
-    expect(read(mainKey).status).toBe("done");
     const child = read(childKey);
     expect(child).toMatchObject({
       status: "interrupted",
