@@ -25,9 +25,9 @@ import { createCommandResult as commandResult } from "../../test-utils/npm-spec-
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import * as runtimeUtils from "../../utils.js";
 import { VERSION } from "../../version.js";
-import type { UpdateCommandOptions } from "./shared.js";
 import { completeUpdateCommandRun } from "./update-command-run.js";
 import { maintenanceDefaults } from "./update-command-service-fixtures.test-support.js";
+import type { InstallRootTransitionFixture } from "./update-command-service-transition.test-support.js";
 import {
   maybeRestartService,
   maybeStopManagedServiceBeforeMutableUpdate,
@@ -219,34 +219,25 @@ export async function writeRecoveryConfig(configPath: string, version: string) {
   clearRuntimeConfigSnapshot();
 }
 
-export function registerRecoveryTests(params: {
-  root: () => string;
-  configPath: () => string;
-  run: () => NonNullable<UpdateCommandOptions["run"]>;
-  mocks: {
-    health: Mock<typeof import("../daemon-cli/restart-health.js").waitForGatewayHealthyRestart>;
-    capability: Mock<
-      typeof import("../../daemon/systemd-definition-mutation.js").readSystemdDefinitionMutationCapability
-    >;
-    command: Mock<typeof import("../../daemon/systemd.js").readSystemdServiceExecStart>;
-    child: Mock<typeof import("../../process/exec.js").runCommandWithTimeout>;
-    error: Mock;
-    restart: Mock;
-    ports: Mock<typeof import("../../infra/ports-inspect.js").inspectPortUsage>;
-    call: Mock<(opts: CallGatewayOptions) => Promise<unknown>>;
-    configSnapshot: Mock<() => Promise<void>>;
-    running: boolean;
-    events: string[];
-  };
-}): void {
+export function registerRecoveryTests(
+  getFixture: () => InstallRootTransitionFixture & {
+    configPath: string;
+    mocks: {
+      error: Mock;
+      restart: Mock;
+      configSnapshot: Mock<() => Promise<void>>;
+      ports: Mock<typeof import("../../infra/ports-inspect.js").inspectPortUsage>;
+      call: Mock<(opts: CallGatewayOptions) => Promise<unknown>>;
+    };
+  },
+): void {
   it.each([
     { startup: "unready", readyAfterMs: Infinity, needsRecovery: false },
     { startup: "wrong version", readyAfterMs: 0, needsRecovery: true },
   ])(
     "verifies the $startup refresh before deciding on recovery",
     async ({ startup, readyAfterMs, needsRecovery }) => {
-      const root = params.root();
-      const mocks = params.mocks;
+      const { root, run, mocks } = getFixture();
       let nowMs = 0;
       let recovering = false;
       vi.spyOn(performance, "now").mockImplementation(() => nowMs);
@@ -308,7 +299,7 @@ export function registerRecoveryTests(params: {
       const activated = await maybeRestartService({
         shouldRestart: true,
         result,
-        opts: { json: true, run: params.run() },
+        opts: { json: true, run },
         refreshServiceEnv: true,
         serviceInstallEnv: process.env,
         serviceUpdateVerdict: before.serviceUpdateVerdict,
@@ -322,7 +313,6 @@ export function registerRecoveryTests(params: {
       const pending = startup === "unready";
       expect(activated).toBe(pending ? "readiness-pending" : "ok");
       if (pending) {
-        const run = params.run();
         expect(completeUpdateCommandRun(result, run)).toMatchObject({
           status: "skipped",
           reason: "still-starting",
@@ -357,11 +347,12 @@ export function registerRecoveryTests(params: {
   it.each(["healthy", "unready", "exited", "cleanup"] as const)(
     "failed-update recovery requires canonical readiness after start acceptance (%s)",
     async (outcome) => {
+      const { root, mocks } = getFixture();
       const before = await maybeStopManagedServiceBeforeMutableUpdate({
         ...maintenanceDefaults,
-        root: params.root(),
+        root,
       });
-      params.mocks.health.mockImplementation(async ({ port, expectedVersion }) => ({
+      mocks.health.mockImplementation(async ({ port, expectedVersion }) => ({
         outcome: outcome === "healthy" ? "ready" : outcome === "exited" ? "failed" : "starting",
         healthy: outcome === "healthy",
         staleGatewayPids: [],
@@ -376,7 +367,7 @@ export function registerRecoveryTests(params: {
       }));
       const cleanup = new CommandProcessCleanupError();
       if (outcome === "cleanup") {
-        params.mocks.health.mockRejectedValueOnce(cleanup);
+        mocks.health.mockRejectedValueOnce(cleanup);
       }
       const pending = maybeRestartServiceAfterFailedMutableUpdate({
         preManagedServiceStop: before,
@@ -388,7 +379,7 @@ export function registerRecoveryTests(params: {
       } else {
         await expect(pending).resolves.toBe(outcome === "healthy" ? "healthy" : "failed");
       }
-      expect(params.mocks.health).toHaveBeenCalledWith(
+      expect(mocks.health).toHaveBeenCalledWith(
         expect.objectContaining({
           expectedBuildId: "restored-git-build",
           requireRunningService: true,
@@ -399,9 +390,7 @@ export function registerRecoveryTests(params: {
   it.each(["foreign", "profile", "before activation", "after readiness"])(
     "revalidates stale-parent failed-update recovery after %s changes",
     async (change) => {
-      const root = params.root();
-      const configPath = params.configPath();
-      const mocks = params.mocks;
+      const { root, configPath, mocks } = getFixture();
       mocks.capability.mockResolvedValue({ kind: "writable" });
       const before = await maybeStopManagedServiceBeforeMutableUpdate({
         ...maintenanceDefaults,

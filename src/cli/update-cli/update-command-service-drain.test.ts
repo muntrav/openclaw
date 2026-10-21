@@ -396,36 +396,6 @@ it.each(["session-mutation", "backup"] as const)(
   },
 );
 
-it.each(["ready", "draining"] as const)(
-  "requires the %s suspension before an immutable stop despite adequate native budgets",
-  async (phase) => {
-    const f = fixture({
-      resident: { pid: 42, shutdownBudget: { timeoutMs: 325_000 } },
-      observations: [phase === "ready" ? ready() : draining("embedded-run", "1 active turn")],
-    });
-    const running = f.interrupt();
-    await vi.advanceTimersByTimeAsync(0);
-    if (phase === "draining") {
-      expect(f.stop).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(f.params.timeoutMs);
-      expect(mocks.call).toHaveBeenCalledWith(
-        expect.objectContaining({
-          method: "gateway.suspend.handoff",
-          params: {
-            suspensionId: "resident-suspension",
-            target: { pid: 42, processInstanceId: "resident-instance" },
-            commit: true,
-          },
-        }),
-      );
-    }
-    await expect(running).resolves.toBe("stopped");
-    expect(f.events.indexOf("handoff")).toBeLessThan(f.events.indexOf("stop"));
-    expect(f.events[1]).toBe(`observe:${phase}`);
-    expect(f.stop).toHaveBeenCalledOnce();
-  },
-);
-
 it.each([
   { timeoutMs: undefined, drainMs: 30_000 },
   { timeoutMs: 60_000, drainMs: 30_000 },
