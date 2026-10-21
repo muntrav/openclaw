@@ -49,6 +49,10 @@ function childRun(
   return { cancel: vi.fn(), wait: async () => result, waitForExtinction };
 }
 
+function expectDiagnostic(logger: typeof log.info, fields: Record<string, unknown>) {
+  expect(logger).toHaveBeenCalledWith(expect.any(String), expect.objectContaining(fields));
+}
+
 function captureShutdown() {
   let shutdown: (() => void) | undefined;
   vi.spyOn(process, "once").mockImplementation(((event: string, listener: () => void) => {
@@ -125,14 +129,12 @@ describe("Windows Gateway task supervisor", () => {
     await runSupervisor();
 
     expect(bindWindowsTaskLauncher).not.toHaveBeenCalled();
-    expect(spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: "anchored-shell",
-        command: expect.stringContaining("gateway"),
-        scopeKey: `gateway-task-supervisor:${process.pid}`,
-        captureOutput: false,
-      }),
-    );
+    expect(spawn.mock.calls[0]?.[0]).toMatchObject({
+      mode: "anchored-shell",
+      command: expect.stringContaining("gateway"),
+      scopeKey: `gateway-task-supervisor:${process.pid}`,
+      captureOutput: false,
+    });
     expect(spawn.mock.calls[0]?.[0].command).not.toMatch(/"--task-supervisor"(?:\s|$)/u);
     expect(spawn.mock.calls[0]?.[0].command).toContain(`${WINDOWS_TASK_SUPERVISOR_CHILD_FLAG}=`);
     expect(spawn.mock.calls[0]?.[0].command).toContain("--import");
@@ -161,11 +163,7 @@ describe("Windows Gateway task supervisor", () => {
 
     expect(spawn).toHaveBeenCalledOnce();
     expect(process.exitCode ?? 0).toBe(expectedCode);
-    const diagnostic = result.exitCode === 0 ? log.info : log.error;
-    expect(diagnostic).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ ...result, stderr }),
-    );
+    expectDiagnostic(result.exitCode === 0 ? log.info : log.error, { ...result, stderr });
     expect(flushLogger).toHaveBeenCalledOnce();
   });
 
@@ -182,10 +180,7 @@ describe("Windows Gateway task supervisor", () => {
 
     await runSupervisor();
 
-    expect(log.error).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ stderr: expect.stringContaining(lastReason) }),
-    );
+    expectDiagnostic(log.error, { stderr: expect.stringContaining(lastReason) });
     const stderr: string = log.error.mock.calls[0]?.[1].stderr;
     expect(stderr.length).toBeLessThanOrEqual(8192);
     expect(stderr).not.toContain("old stderr diagnostic");
@@ -197,10 +192,7 @@ describe("Windows Gateway task supervisor", () => {
     spawn.mockImplementation(async (input: SpawnInput) => {
       input.onStderr?.(stderr);
       return childRun({ exitCode: 23, exitSignal: null, reason: "exit" }, async () => {
-        expect(log.error).toHaveBeenCalledWith(
-          expect.any(String),
-          expect.objectContaining({ exitCode: 23, stderr }),
-        );
+        expectDiagnostic(log.error, { exitCode: 23, stderr });
         throw new Error("synthetic Job Object cleanup failure");
       });
     });

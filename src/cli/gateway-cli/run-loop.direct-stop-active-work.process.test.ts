@@ -22,10 +22,7 @@ const childScript = `
   import fs from "node:fs";
   import { createChannelIngressDrain } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.ingressDrain))};
   import { createChannelIngressQueue } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.ingressQueue))};
-  import {
-    attachActiveEmbeddedRun,
-    detachActiveEmbeddedRun,
-  } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.runs))};
+  import { attachActiveEmbeddedRun, detachActiveEmbeddedRun } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.runs))};
   import { withSessionTurn } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.sessionControllerAdmission))};
   import { getActiveSessionRunCount } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.sessionControllerQueries))};
   import { runGatewayLoop } from ${JSON.stringify(moduleUrl(gatewayDirectStopEntrypoints.runLoop))};
@@ -55,12 +52,7 @@ const childScript = `
       withSessionTurn({ sessionKey, sessionId }, async (operation) => {
         const registration = attachActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, undefined, operation);
         await lifecycle.onAdopted();
-        trace(
-          "adopted:roots=" +
-            getActiveGatewayRootWorkCount() +
-            ":embedded=" +
-            getActiveSessionRunCount(),
-        );
+        trace("adopted:roots=" + getActiveGatewayRootWorkCount() + ":embedded=" + getActiveSessionRunCount());
         adopted.resolve();
         await embedded.promise;
         detachActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, undefined, registration);
@@ -199,9 +191,9 @@ posixIt(
     expect(output.indexOf("embeddedRuns=1")).toBeLessThan(embeddedCompleted);
     expect(drainSettled).toBeGreaterThanOrEqual(0);
     expect(drainSettled).toBeLessThan(output.indexOf("process proof: gateway-close"));
-    expect(output).toContain("restart trace: stop.signal.received ");
-    expect(output).toContain("restart trace: stop.drain.begin ");
-    expect(output).toContain("restart trace: stop.drain ");
+    for (const phase of ["stop.signal.received", "stop.drain.begin", "stop.drain"]) {
+      expect(output).toContain(`restart trace: ${phase} `);
+    }
   },
   60_000,
 );

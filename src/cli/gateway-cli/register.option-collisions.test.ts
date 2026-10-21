@@ -142,16 +142,17 @@ function expectCliError(message: unknown) {
   expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
 }
 
+const parse = (...args: string[]) =>
+  sharedProgram.parseAsync(["gateway", ...args], { from: "user" });
+const sharedProgram = new Command();
+sharedProgram.exitOverride();
+registerGatewayCli(sharedProgram);
+
 describe("gateway register option collisions", () => {
-  const sharedProgram: Command = new Command();
-
-  sharedProgram.exitOverride();
-  registerGatewayCli(sharedProgram);
-
   beforeEach(() => vi.clearAllMocks());
 
   it("requires explicit confirmation before revealing the Gateway token", async () => {
-    await sharedProgram.parseAsync(["gateway", "auth-token"], { from: "user" });
+    await parse("auth-token");
 
     expect(mocks.gatewayAuthTokenCommand).not.toHaveBeenCalled();
     expect(defaultRuntime.error).toHaveBeenCalledWith(
@@ -161,7 +162,7 @@ describe("gateway register option collisions", () => {
   });
 
   it("routes an explicitly confirmed token reveal through the output runtime", async () => {
-    await sharedProgram.parseAsync(["gateway", "auth-token", "--show"], { from: "user" });
+    await parse("auth-token", "--show");
 
     expect(mocks.gatewayAuthTokenCommand).toHaveBeenCalledWith(defaultRuntime);
     expect(defaultRuntime.error).not.toHaveBeenCalled();
@@ -170,13 +171,13 @@ describe("gateway register option collisions", () => {
   it.each([
     {
       name: "gives setup detection enough transport grace",
-      argv: ["gateway", "call", "openclaw.setup.detect", "--json"],
+      argv: ["call", "openclaw.setup.detect", "--json"],
       method: "openclaw.setup.detect",
       opts: { timeout: "40000" },
     },
     {
       name: "projects gateway suspend --port and request id",
-      argv: ["gateway", "suspend", "--request-id", "host-operation", "--port", "19086", "--json"],
+      argv: ["suspend", "--request-id", "host-operation", "--port", "19086", "--json"],
       method: "gateway.suspend.prepare",
       opts: { localPortOverride: 19086 },
       params: { requestId: "host-operation" },
@@ -184,7 +185,7 @@ describe("gateway register option collisions", () => {
     },
     {
       name: "inherits parent --port for gateway resume",
-      argv: ["gateway", "--port", "19087", "resume", "suspension-1", "--json"],
+      argv: ["--port", "19087", "resume", "suspension-1", "--json"],
       method: "gateway.suspend.resume",
       opts: { localPortOverride: 19087 },
       params: { suspensionId: "suspension-1" },
@@ -192,20 +193,20 @@ describe("gateway register option collisions", () => {
     },
     {
       name: "prefers the explicit usage-cost --port over the parent --port",
-      argv: ["gateway", "--port", "19090", "usage-cost", "--port", "19091", "--json"],
+      argv: ["--port", "19090", "usage-cost", "--port", "19091", "--json"],
       method: "usage.cost",
       opts: { localPortOverride: 19091 },
       params: { days: 30 },
     },
     {
       name: "prefers the explicit live stability --port over the parent --port",
-      argv: ["gateway", "--port", "19094", "stability", "--port", "19095", "--json"],
+      argv: ["--port", "19094", "stability", "--port", "19095", "--json"],
       method: "diagnostics.stability",
       opts: { localPortOverride: 19095 },
       params: { limit: 25 },
     },
   ])("$name", async ({ argv, method, opts, params, json }) => {
-    await sharedProgram.parseAsync(argv, { from: "user" });
+    await parse(...argv);
     expect(defaultRuntime.error).not.toHaveBeenCalled();
     expect(callGatewayCli).toHaveBeenCalledOnce();
     expect(callGatewayCli.mock.calls[0]?.slice(0, 2)).toEqual([
@@ -221,9 +222,7 @@ describe("gateway register option collisions", () => {
   });
 
   it("inherits parent --port for gateway probe", async () => {
-    await sharedProgram.parseAsync(["gateway", "--port", "19082", "probe", "--json"], {
-      from: "user",
-    });
+    await parse("--port", "19082", "probe", "--json");
     expect(gatewayStatusCommand).toHaveBeenCalledOnce();
     expect(gatewayStatusCommand.mock.calls[0]?.[0]).toMatchObject({ port: "19082" });
   });
@@ -241,10 +240,7 @@ describe("gateway register option collisions", () => {
 
     await defaultRuntime.exit.withImplementation(runtime.defaultRuntime.exit, async () => {
       await expect(
-        sharedProgram.parseAsync(
-          ["gateway", "suspend", "--request-id", "host-operation", "--json"],
-          { from: "user" },
-        ),
+        parse("suspend", "--request-id", "host-operation", "--json"),
       ).rejects.toMatchObject({ name: "ExitError", code: 1 });
     });
 
@@ -256,18 +252,13 @@ describe("gateway register option collisions", () => {
   });
 
   it("rejects non-decimal usage-cost --days values instead of silently defaulting", async () => {
-    await sharedProgram.parseAsync(["gateway", "usage-cost", "--days", "1e3", "--json"], {
-      from: "user",
-    });
+    await parse("usage-cost", "--days", "1e3", "--json");
 
     expectCliError(expect.stringContaining("Invalid --days"));
   });
 
   it("rejects combining --url and --port for gateway call", async () => {
-    await sharedProgram.parseAsync(
-      ["gateway", "call", "health", "--url", "ws://127.0.0.1:19084", "--port", "19084", "--json"],
-      { from: "user" },
-    );
+    await parse("call", "health", "--url", "ws://127.0.0.1:19084", "--port", "19084", "--json");
 
     expectCliError("Use either --url or --port, not both.");
   });
@@ -277,10 +268,7 @@ describe("gateway register option collisions", () => {
     callGatewayCli.mockRejectedValueOnce(authError);
     emitReachableGatewayAuthDiagnostic.mockResolvedValueOnce(true);
 
-    await sharedProgram.parseAsync(
-      ["gateway", "health", "--port", "19081", "--timeout", "1234", "--json"],
-      { from: "user" },
-    );
+    await parse("health", "--port", "19081", "--timeout", "1234", "--json");
 
     expect(emitReachableGatewayAuthDiagnostic).toHaveBeenCalledExactlyOnceWith({
       error: authError,

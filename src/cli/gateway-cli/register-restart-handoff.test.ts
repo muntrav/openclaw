@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../infra/restart-handoff.js", () => ({
-  consumeGatewayRestartHandoffSync: (opts: unknown) => mocks.consumeGatewayRestartHandoffSync(opts),
+  consumeGatewayRestartHandoffSync: mocks.consumeGatewayRestartHandoffSync,
 }));
 
 vi.mock("../../runtime.js", () => ({
@@ -30,12 +30,8 @@ const run = (...args: string[]) =>
     argv: ["gateway", "restart-handoff", ...args, "--json"],
   });
 const protocol = { protocol: "openclaw.gateway.restart-handoff", protocolVersion: 1 };
-function expectJson(fields: Record<string, unknown>) {
-  expect(mocks.defaultRuntime.writeJson).toHaveBeenCalledWith({
-    ...protocol,
-    ...fields,
-  });
-}
+const expectJson = (fields: Record<string, unknown>) =>
+  expect(mocks.defaultRuntime.writeJson).toHaveBeenCalledWith({ ...protocol, ...fields });
 function expectError(reason: string, exitCode: number) {
   expectJson({ ok: false, status: "error", reason });
   expect(mocks.defaultRuntime.exit).toHaveBeenCalledWith(exitCode);
@@ -43,10 +39,9 @@ function expectError(reason: string, exitCode: number) {
 
 describe("gateway restart-handoff commands", () => {
   beforeEach(() => {
-    mocks.consumeGatewayRestartHandoffSync.mockReset();
-    mocks.defaultRuntime.error.mockReset();
-    mocks.defaultRuntime.writeJson.mockReset();
-    mocks.defaultRuntime.exit.mockReset();
+    [mocks.consumeGatewayRestartHandoffSync, ...Object.values(mocks.defaultRuntime)].forEach(
+      (mock) => mock.mockReset(),
+    );
   });
 
   it("keeps the machine command group out of normal gateway help", () => {
