@@ -106,8 +106,8 @@ async function restoreScopedMigration(
 
 type MigrationFixture = {
   database: DatabaseSync;
-  migrate(outcome?: string): Promise<void>;
-  restore(capture: () => unknown): Promise<void>;
+  migrate: (outcome?: string) => Promise<void>;
+  restore: (capture: () => unknown) => Promise<void>;
 };
 
 export function migrationFixture(config: {
