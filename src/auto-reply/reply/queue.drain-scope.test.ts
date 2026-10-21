@@ -31,6 +31,30 @@ import { clearFollowupQueue } from "./queue/state.js";
 
 installQueueRuntimeErrorSilencer();
 
+it.each([true, false])(
+  "uses the source runner when registered=%s, otherwise the waking runner",
+  async (registered) => {
+    const key = `source-runner-${registered}`;
+    const outcome = createDeferredCore<string>();
+    const source = createRun({ prompt: "queued source" });
+    try {
+      enqueueFollowupRun(
+        key,
+        source,
+        { mode: "followup", debounceMs: 0, cap: 10 },
+        "none",
+        registered ? async () => outcome.resolve("source") : undefined,
+        false,
+      );
+      scheduleFollowupDrain(key, async () => outcome.resolve("wake"));
+      await expect(outcome.promise).resolves.toBe(registered ? "source" : "wake");
+      await source.controllerInput?.claim?.settlement.promise;
+    } finally {
+      clearFollowupQueue(key);
+    }
+  },
+);
+
 it("drained followup turn keeps tracked work accepted after the triggering scope closes", async () => {
   resetGatewayWorkAdmission();
   const key = `test-drain-scope-close-${Date.now()}`;

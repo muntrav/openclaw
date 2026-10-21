@@ -42,7 +42,7 @@ import {
   retireFollowupRunCancellation,
   updateFollowupRetryHeartbeats,
 } from "./lifecycle.js";
-import { followupQueueSources } from "./state.js";
+import { followupQueueSources, followupSourceRunners } from "./state.js";
 import { consumeQueueSummaryDelivery } from "./summary-consumption.js";
 import { isFollowupRunAborted, type FollowupRun } from "./types.js";
 
@@ -204,7 +204,9 @@ async function executeClaim(
   let adoptionRefused = false;
   let waitForFreshKick = false;
   try {
-    await execute(run);
+    const runFollowup =
+      (source.controllerInput && followupSourceRunners.get(source.controllerInput)) ?? execute;
+    await runFollowup(run);
   } catch (error) {
     updateFollowupRetryHeartbeats(error, sources);
     adoptionRefused = sources.some((item) => {
@@ -380,7 +382,9 @@ export async function dropAbortedFollowups(
   detachSessionControllerSources(sources);
   consumeQueueSummaryDelivery(queue, { sources, droppedCount: 0 }, false);
   for (const source of sources) {
-    const presentation = Promise.resolve().then(() => runFollowup(source));
+    const execute =
+      (source.controllerInput && followupSourceRunners.get(source.controllerInput)) ?? runFollowup;
+    const presentation = Promise.resolve().then(() => execute(source));
     if (source.controllerInput) {
       trackSessionControllerSourceWork(source.controllerInput, presentation);
     }
