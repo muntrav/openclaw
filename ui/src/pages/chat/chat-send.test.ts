@@ -243,16 +243,31 @@ function installQuotaExceededStorage(): void {
   rejectStorageWritesWhen(() => true);
 }
 
-function rejectStorageWritesWhen(shouldReject: () => boolean) {
-  const storage = createStorageMock();
+function rejectStorageWritesWhen(
+  shouldReject: (key: string, value: string) => boolean,
+  storage = createStorageMock(),
+) {
   const write = storage.setItem.bind(storage);
   vi.stubGlobal("sessionStorage", storage);
   return vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
-    if (shouldReject()) {
+    if (shouldReject(key, value)) {
       throw new DOMException("quota exceeded", "QuotaExceededError");
     }
     write(key, value);
   });
+}
+
+function holdNextPayloadRead(readStarted = createDeferred(), releaseRead = createDeferred()) {
+  const readPayload = outboxPayloadStore.readOutboxPayload;
+  const read = vi
+    .spyOn(outboxPayloadStore, "readOutboxPayload")
+    .mockImplementationOnce(async (...args) => {
+      const result = await readPayload(...args);
+      readStarted.resolve();
+      await releaseRead.promise;
+      return result;
+    });
+  return { readStarted, releaseRead, read };
 }
 
 beforeEach(() => {
@@ -702,8 +717,7 @@ describe("refreshChat", () => {
       expect(requestCalls(host.request, "chat.startup")).toHaveLength(1);
       expect(getChatHistoryLoadState(host)).toMatchObject({ phase: "failed" });
       await wake;
-      expect(host.chatLoading).toBe(false);
-      expect(host.chatMessage).toBe("Keep my next draft");
+      expect(host).toMatchObject({ chatLoading: false, chatMessage: "Keep my next draft" });
       expect(requestCalls(host.request, "chat.send")).toHaveLength(0);
 
       startup.resolve(recovered);
@@ -1055,8 +1069,7 @@ describe("handleSendChat", () => {
           idempotencyKey: expect.any(String),
         });
         expect(host.request).toHaveBeenCalledTimes(1);
-        expect(host.chatMessage).toBe("new draft");
-        expect(host.chatRunId).toBe("redirect-run");
+        expect(host).toMatchObject({ chatMessage: "new draft", chatRunId: "redirect-run" });
       } else {
         expect(host.request).not.toHaveBeenCalled();
         expect(host.chatMessage).toBe("/redirect start over");
@@ -1117,8 +1130,7 @@ describe("handleSendChat", () => {
         );
         expect(host.sessionsResult).toBe(archivedSessions);
       } else {
-        expect(host.chatRunId).toBeNull();
-        expect(host.chatStream).toBeNull();
+        expect(host).toMatchObject({ chatRunId: null, chatStream: null });
         expect(runState.chatStreamStartedAt).toBeNull();
         expect(host.refreshSessionsAfterChat.size).toBe(0);
       }
@@ -1169,9 +1181,7 @@ describe("handleSendChat", () => {
       sendRunId: rejectedRunId,
       sendState: "failed",
     });
-    expect(host.lastError).toBeNull();
-    expect(host.chatError).toBeNull();
-    expect(host.chatRunId).toBeNull();
+    expect(host).toMatchObject({ lastError: null, chatError: null, chatRunId: null });
     expect(
       getChatSessionProjection(host, { sessionKey: host.sessionKey }).entries,
     ).not.toContainEqual(expect.objectContaining({ pendingRunId: rejectedRunId }));
@@ -1275,21 +1285,18 @@ describe("handleSendChat", () => {
     const queuedText = "do not bypass the late picker";
     const history = createDeferred<unknown>();
     const settingsUpdate = createDeferred<unknown>();
-    const storage = createStorageMock();
-    const write = storage.setItem.bind(storage);
     let rejectedBarrier = false;
-    vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
+    rejectStorageWritesWhen((_key, value) => {
       if (
         !rejectedBarrier &&
         value.includes(`"text":"${queuedText}"`) &&
         value.includes('"sendState":"failed"')
       ) {
         rejectedBarrier = true;
-        throw new DOMException("quota exceeded", "QuotaExceededError");
+        return true;
       }
-      write(key, value);
+      return false;
     });
-    vi.stubGlobal("sessionStorage", storage);
     const host = makeChatHost({
       requestHandlers: {
         "chat.history": () => history.promise,
@@ -1529,8 +1536,7 @@ describe("handleSendChat", () => {
     await send;
     await Promise.resolve();
 
-    expect(host.chatFollowLocked).toBe(true);
-    expect(host.chatHasAutoScrolled).toBe(true);
+    expect(host).toMatchObject({ chatFollowLocked: true, chatHasAutoScrolled: true });
     expect(scrollToEnd).not.toHaveBeenCalled();
     expect(container.scrollTop).toBe(1200);
   });
@@ -2151,14 +2157,15 @@ describe("handleSendChat", () => {
     host.connectionEpoch = 2;
     markQueuedChatSendsWaitingForReconnect(host);
     host.chatMessages = [{ role: "assistant", content: "Replacement Gateway transcript" }];
-    host.chatRunId = "replacement-run";
-    host.chatStream = "Replacement Gateway stream";
-    host.chatSending = true;
-    host.chatSendingScopeKey = storedChatOutboxScopeKey({
-      sessionKey: item.sessionKey,
-    });
-    host.lastError = "Replacement Gateway error";
-    host.chatError = "Replacement Gateway error";
+    const replacementState = {
+      chatRunId: "replacement-run",
+      chatStream: "Replacement Gateway stream",
+      chatSending: true,
+      chatSendingScopeKey: storedChatOutboxScopeKey({ sessionKey: item.sessionKey }),
+      lastError: "Replacement Gateway error",
+      chatError: "Replacement Gateway error",
+    };
+    Object.assign(host, replacementState);
     const replacementMessages = host.chatMessages;
 
     ack.resolve({ runId: "old-gateway-reset-run", status: "ok" });
@@ -2172,16 +2179,7 @@ describe("handleSendChat", () => {
       }),
     );
     expect(host.chatMessages).toBe(replacementMessages);
-    expect(host.chatRunId).toBe("replacement-run");
-    expect(host.chatStream).toBe("Replacement Gateway stream");
-    expect(host.chatSending).toBe(true);
-    expect(host.chatSendingScopeKey).toBe(
-      storedChatOutboxScopeKey({
-        sessionKey: item.sessionKey,
-      }),
-    );
-    expect(host.lastError).toBe("Replacement Gateway error");
-    expect(host.chatError).toBe("Replacement Gateway error");
+    expect(host).toMatchObject(replacementState);
     expect(host.refreshSessionsAfterChat).toEqual(new Map());
     expect(refreshSessions).not.toHaveBeenCalled();
     expect(replacementRequest).not.toHaveBeenCalled();
@@ -2410,7 +2408,6 @@ describe("handleSendChat", () => {
   it("does not execute a stored local command when its durable claim fails", async () => {
     const storage = createStorageMock();
     vi.stubGlobal("sessionStorage", storage);
-    const write = storage.setItem.bind(storage);
     executeSlashCommandMock.mockResolvedValue({ content: "Thinking level set." });
 
     const item = createQueuedLocalCommand("local-command-claim-failure", "/think high");
@@ -2422,13 +2419,13 @@ describe("handleSendChat", () => {
     });
     admitItem(host, item);
     let failedClaims = 0;
-    vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
+    rejectStorageWritesWhen((_key, value) => {
       if (value.includes(item.id) && value.includes('"unconfirmed"') && failedClaims === 0) {
         failedClaims += 1;
-        throw new DOMException("quota exceeded", "QuotaExceededError");
+        return true;
       }
-      write(key, value);
-    });
+      return false;
+    }, storage);
 
     await resumeStoredChatOutboxes(host);
 
@@ -2520,7 +2517,6 @@ describe("handleSendChat", () => {
   it("keeps the uncertain clear as a durable barrier when parking its successor fails", async () => {
     const storage = createStorageMock();
     vi.stubGlobal("sessionStorage", storage);
-    const write = storage.setItem.bind(storage);
     let resetIssued = false;
     let failedBarrierWrites = 0;
 
@@ -2541,7 +2537,7 @@ describe("handleSendChat", () => {
     });
     admitItem(host, clear);
     admitItem(host, successor);
-    vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
+    rejectStorageWritesWhen((_key, value) => {
       const successorIndex = value.indexOf(`"id":"${successor.id}"`);
       const successorRecord =
         successorIndex >= 0 ? value.slice(successorIndex, successorIndex + 500) : "";
@@ -2551,10 +2547,10 @@ describe("handleSendChat", () => {
         successorRecord.includes('"sendState":"unconfirmed"')
       ) {
         failedBarrierWrites += 1;
-        throw new DOMException("quota exceeded", "QuotaExceededError");
+        return true;
       }
-      write(key, value);
-    });
+      return false;
+    }, storage);
 
     await resumeStoredChatOutboxes(host);
 
@@ -2826,17 +2822,8 @@ describe("handleSendChat", () => {
       expect(await prepareOutboxPayload(other, candidate)).toMatchObject(expected);
 
       const readPayload = outboxPayloadStore.readOutboxPayload;
-      const readStarted = createDeferred();
-      const releaseRead = createDeferred();
       const pending: Array<ReturnType<typeof prepareOutboxPayload>> = [];
-      const read = vi
-        .spyOn(outboxPayloadStore, "readOutboxPayload")
-        .mockImplementationOnce(async (...args) => {
-          const result = await readPayload(...args);
-          readStarted.resolve();
-          await releaseRead.promise;
-          return result;
-        });
+      const { read, readStarted, releaseRead } = holdNextPayloadRead();
       try {
         const first = prepareOutboxPayload(source, original);
         pending.push(first);
@@ -2963,15 +2950,7 @@ describe("handleSendChat", () => {
         const [first, second] = host.chatQueue;
         expect(first?.attachmentPayload).toBeDefined();
         expect(second?.text).toBe("text B");
-        const readPayload = outboxPayloadStore.readOutboxPayload;
-        vi.spyOn(outboxPayloadStore, "readOutboxPayload").mockImplementationOnce(
-          async (...args) => {
-            const result = await readPayload(...args);
-            readStarted.resolve();
-            await releaseRead.promise;
-            return result;
-          },
-        );
+        holdNextPayloadRead(readStarted, releaseRead);
         host.connected = true;
         drain = resumeStoredChatOutboxes(host);
         await readStarted.promise;
@@ -3425,17 +3404,15 @@ describe("handleSendChat", () => {
           attachmentPayload: reference,
           sendRunId: runId,
         });
-        await expect(
-          readPayload(
-            {
-              tabId: reference.tabId,
-              gatewayOwner: "default",
-              recoveryScope: "test-recovery-scope",
-              queueId: stored.id,
-            },
-            reference,
-          ),
-        ).resolves.toMatchObject({ status: "ready" });
+        const payloadOwner = {
+          tabId: reference.tabId,
+          gatewayOwner: "default",
+          recoveryScope: "test-recovery-scope",
+          queueId: stored.id,
+        };
+        await expect(readPayload(payloadOwner, reference)).resolves.toMatchObject({
+          status: "ready",
+        });
         expect(requestCalls(request, "chat.send")).toHaveLength(retry ? 2 : 1);
 
         // Consumption retires retry bytes without resurrecting a source absent
@@ -3446,20 +3423,12 @@ describe("handleSendChat", () => {
         expect(listStoredChatOutboxes(host)).toStrictEqual([]);
         expect(host.chatQueue).toStrictEqual([]);
         expect(host.chatMessages).toEqual([]);
-        expect(host.lastError).toBeNull();
-        expect(host.chatError).toBeNull();
+        expect(host).toMatchObject({ lastError: null, chatError: null });
         expect(requestCalls(request, "chat.send")).toHaveLength(retry ? 2 : 1);
-        await expect(
-          readPayload(
-            {
-              tabId: reference.tabId,
-              gatewayOwner: "default",
-              recoveryScope: "test-recovery-scope",
-              queueId: stored.id,
-            },
-            reference,
-          ),
-        ).resolves.toEqual({ status: "failed", reason: "missing" });
+        await expect(readPayload(payloadOwner, reference)).resolves.toEqual({
+          status: "failed",
+          reason: "missing",
+        });
       } finally {
         preview.resolve();
         await pendingPreview;
@@ -3552,8 +3521,7 @@ describe("handleSendChat", () => {
     }
     expect(host.chatMessages).toBe(currentMessages);
     expect(host.currentSessionId).toBe(physicalSessionId);
-    expect(host.chatRunId).toBe("visible-run");
-    expect(host.chatStream).toBe("Still working");
+    expect(host).toMatchObject({ chatRunId: "visible-run", chatStream: "Still working" });
     expectRpc(host.request, "chat.history", {
       sessionKey: target.sessionKey,
       ...(target.sessionKey === "global" ? { agentId: "work" } : {}),
@@ -3752,8 +3720,7 @@ describe("handleSendChat", () => {
     await resumeStoredChatOutboxes(host);
 
     const payload = findRequestPayload(request, "chat.send", "queued global send payload");
-    expect(payload.sessionKey).toBe("global");
-    expect(payload.agentId).toBe("work");
+    expect(payload).toMatchObject({ sessionKey: "global", agentId: "work" });
     expect(
       loadChatComposerState({ ...host, assistantAgentId: "main" }, "global").snapshot,
     ).toBeNull();
@@ -3937,9 +3904,7 @@ describe("handleSendChat", () => {
           ),
         ).toBe(true);
       } else {
-        expect(host.chatRunError).toBeNull();
-        expect(host.chatRunId).toBeNull();
-        expect(host.chatStream).toBeNull();
+        expect(host).toMatchObject({ chatRunError: null, chatRunId: null, chatStream: null });
         expect(host.chatDisplayedLeafEntryId).toBeUndefined();
         host.chatMessage = "after clear";
         await handleSendChat(host);
