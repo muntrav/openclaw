@@ -71,6 +71,34 @@ const cfg = { agents: { entries: { main: {} } } };
 let state: OpenClawTestState;
 let storePath: string;
 
+type ShutdownParams = Parameters<typeof prepareGatewayRunShutdown>[0];
+function shutdown(
+  {
+    chatRunState,
+    agentRunSeq,
+    broadcast,
+    nodeSendToSession,
+  }: Pick<ShutdownParams, "chatRunState" | "agentRunSeq" | "broadcast" | "nodeSendToSession">,
+  resolveGatewayContext: GatewayContextResolver,
+  overrides: Partial<ShutdownParams> = {},
+) {
+  return prepareGatewayRunShutdown({
+    chatRunState,
+    agentRunSeq,
+    broadcast,
+    nodeSendToSession,
+    resolveGatewayContext,
+    timeoutMs: 0,
+    warnings: [],
+    getPendingReplyCount: () => 0,
+    removeChatRun: () => undefined,
+    markMainSessionsAbortedForRestart: async (params) => {
+      await markRestartAbortedMainSessions({ ...params, cfg, stateDir: state.stateDir });
+    },
+    ...overrides,
+  });
+}
+
 function recoveryTarget(sessionKey: string, sessionId: string) {
   return captureSessionTarget({
     storeScope: storePath,
@@ -193,16 +221,7 @@ it.each([
   const harness = createAgentEventTestHarness();
   let replacement: ReturnType<typeof registerRecoveryRun> | undefined;
   try {
-    await prepareGatewayRunShutdown({
-      resolveGatewayContext,
-      timeoutMs: 0,
-      warnings: [],
-      getPendingReplyCount: () => 0,
-      chatRunState: harness.chatRunState,
-      agentRunSeq: harness.agentRunSeq,
-      removeChatRun: () => undefined,
-      broadcast: harness.broadcast,
-      nodeSendToSession: harness.nodeSendToSession,
+    await shutdown(harness, resolveGatewayContext, {
       markMainSessionsAbortedForRestart: async (params) => {
         if (releaseAt === "user abort") {
           registration.controller.abort(createAgentRunDirectAbortError());
@@ -339,20 +358,7 @@ it.each(["admission", "queue", "delegated", "delegated source-only"] as const)(
     const recoveryLog = vi.spyOn(mainSessionRecoveryLog, "info");
     try {
       const harness = createAgentEventTestHarness();
-      await prepareGatewayRunShutdown({
-        resolveGatewayContext,
-        timeoutMs: 0,
-        warnings: [],
-        getPendingReplyCount: () => 0,
-        chatRunState: harness.chatRunState,
-        agentRunSeq: harness.agentRunSeq,
-        removeChatRun: () => undefined,
-        broadcast: harness.broadcast,
-        nodeSendToSession: harness.nodeSendToSession,
-        markMainSessionsAbortedForRestart: async (params) => {
-          await markRestartAbortedMainSessions({ ...params, cfg, stateDir: state.stateDir });
-        },
-      });
+      await shutdown(harness, resolveGatewayContext);
       expect(loadSessionEntry(target)).toMatchObject({
         status: "interrupted",
         abortedLastRun: true,
@@ -551,16 +557,7 @@ it.each(["none", "active", "pending"] as const)(
     try {
       expect(getCommandLaneSnapshot(lane)).toMatchObject({ activeCount: 1, queuedCount: 1 });
       expect(pendingValidation).not.toHaveBeenCalled();
-      const shutdown = await prepareGatewayRunShutdown({
-        resolveGatewayContext,
-        timeoutMs: 0,
-        warnings: [],
-        getPendingReplyCount: () => 0,
-        chatRunState: harness.chatRunState,
-        agentRunSeq: harness.agentRunSeq,
-        removeChatRun: () => undefined,
-        broadcast: harness.broadcast,
-        nodeSendToSession: harness.nodeSendToSession,
+      const closing = await shutdown(harness, resolveGatewayContext, {
         markMainSessionsAbortedForRestart: async (params) => {
           await markRestartAbortedMainSessions({ ...params, cfg, stateDir: state.stateDir });
           successor = await beginSessionEffect({
@@ -593,7 +590,7 @@ it.each(["none", "active", "pending"] as const)(
       expect(successor?.isActive()).toBe(true);
       expect(successorInterrupt).not.toHaveBeenCalled();
       let released = false;
-      void shutdown.released.then(
+      void closing.released.then(
         () => {
           released = true;
         },
@@ -606,9 +603,9 @@ it.each(["none", "active", "pending"] as const)(
       persistFinalWrite.resolve();
       await finalWrite;
       if (callbackFailure === "none") {
-        await shutdown.released;
+        await closing.released;
       } else {
-        await expect(shutdown.released).rejects.toThrow(
+        await expect(closing.released).rejects.toThrow(
           `Synthetic ${callbackFailure} admission cancellation failure`,
         );
       }
@@ -729,13 +726,8 @@ it.each(
         lastRunId: clientRunId,
       });
 
-      await prepareGatewayRunShutdown({
-        ...params,
-        resolveGatewayContext,
-        timeoutMs: 0,
-        warnings: [],
-        getPendingReplyCount: () => 0,
-        removeChatRun: () => undefined,
+      await shutdown(params, resolveGatewayContext, {
+        restartRecoveryCandidates: params.restartRecoveryCandidates,
         markMainSessionsAbortedForRestart: async (captured) => {
           if (outcome === "replacement") {
             // The old terminal is already durable; a newer turn wins before its marker writes.
@@ -883,18 +875,8 @@ it("persists recovery when restart cancellation precedes shutdown marking", asyn
     }
     registrations[1]!.controller.abort(createAgentRunRestartAbortError());
     const warnings: string[] = [];
-    await prepareGatewayRunShutdown({
-      resolveGatewayContext,
-      timeoutMs: 0,
+    await shutdown(harness, resolveGatewayContext, {
       warnings,
-      getPendingReplyCount: () => 0,
-      chatRunState: harness.chatRunState,
-      agentRunSeq: harness.agentRunSeq,
-      removeChatRun: () => undefined,
-      broadcast: harness.broadcast,
-      nodeSendToSession: harness.nodeSendToSession,
-      markMainSessionsAbortedForRestart: (params) =>
-        markRestartAbortedMainSessions({ ...params, cfg, stateDir: state.stateDir }).then(() => {}),
     });
     await joinPersistence();
     expect(read(mainKey).mainRestartRecovery?.cycleId).toEqual(expect.any(String));
