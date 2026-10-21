@@ -7,15 +7,16 @@ import { createApplicationGateway } from "../test-helpers/application-context.ts
 import { mountSolid } from "../test-helpers/solid-render.tsx";
 import { AgentCreateDialog } from "./agent-create-dialog.tsx";
 
+type FooterState = {
+  mode: "bot" | "generate" | "upload";
+  canGenerate: boolean;
+  generated: boolean;
+  busy: boolean;
+};
+
 const picker = vi.hoisted(() => ({
   select: null as ((avatar: string) => void) | null,
-  footerChange: null as
-    | ((state: {
-        mode: "bot" | "generate" | "upload";
-        canGenerate: boolean;
-        generated: boolean;
-      }) => void)
-    | null,
+  footerChange: null as ((state: Partial<FooterState>) => void) | null,
   generate: vi.fn(),
 }));
 const selectedAvatar = "data:image/webp;base64,Ym90";
@@ -27,24 +28,22 @@ vi.mock("../pages/agents/avatar-picker.tsx", () => ({
     onActionsReady?: (actions: {
       generate: () => Promise<void>;
       reset: () => void;
-      footerState: () => {
-        mode: "bot" | "generate" | "upload";
-        canGenerate: boolean;
-        generated: boolean;
-      };
+      footerState: () => FooterState;
     }) => void;
   }) => {
-    const [footerState, setFooterState] = createSignal({
-      mode: "bot" as const,
+    const [footerState, setFooterState] = createSignal<FooterState>({
+      mode: "bot",
       canGenerate: false,
       generated: false,
+      busy: false,
     });
     return (
       <div
         data-testid="choose-avatar"
         ref={() => {
           picker.select = props.onSelect;
-          picker.footerChange = setFooterState;
+          picker.footerChange = (state) =>
+            setFooterState((previous) => ({ ...previous, ...state }));
           props.onActionsReady?.({
             generate: async () => picker.generate(),
             reset: () => {},
@@ -125,6 +124,12 @@ it("generates first, then saves the named agent with the generated avatar", () =
 
   const action = view.container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
   expect(action.textContent?.trim()).toBe("Generate");
+  picker.footerChange!({ busy: true });
+  flush();
+  expect(action.disabled).toBe(true);
+  picker.footerChange!({ busy: false });
+  flush();
+  expect(action.disabled).toBe(false);
   action.click();
   expect(picker.generate).toHaveBeenCalledOnce();
   expect(onCreate).not.toHaveBeenCalled();

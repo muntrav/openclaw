@@ -30,16 +30,17 @@ export function AgentCreateDialog(props: {
 }) {
   const [name, setName] = createSignal("");
   const [avatar, setAvatar] = createSignal<string | null>(null);
-  const [pickerBusy, setPickerBusy] = createSignal(false);
   const [uploadBusy, setUploadBusy] = createSignal(false);
   const [avatarError, setAvatarError] = createSignal<string | null>(null);
   const initialPickerFooter: AvatarPickerFooterState = {
     mode: "bot",
     canGenerate: false,
     generated: false,
+    busy: false,
   };
   const [pickerActions, setPickerActions] = createSignal<AvatarPickerActions | null>(null);
   const pickerFooter = () => pickerActions()?.footerState() ?? initialPickerFooter;
+  const pickerBusy = () => pickerFooter().busy;
   const draftAgentId = `bot-draft-${createUniqueId()}`;
   const dialogTitle = createMemo(() => t("agentChip.createDialogTitle"));
   const namePlaceholder = createMemo(() => t("agentChip.createDialogName"));
@@ -175,7 +176,6 @@ export function AgentCreateDialog(props: {
             }}
             onUpload={(file) => void uploadAvatar(file)}
             onGenerate={generateAvatar}
-            onBusyChange={setPickerBusy}
             footerGeneration
             onActionsReady={setPickerActions}
             onReset={() => {

@@ -95,7 +95,6 @@ it("selects a generated avatar directly in the creation dialog and clears busy o
   const pending = createDeferred<GeneratedAvatar>();
   const onSelect = vi.fn();
   const onReset = vi.fn();
-  const onBusyChange = vi.fn();
   const actionsRef: { current: AvatarPickerActions | null } = { current: null };
   const view = mountSolid(AvatarPicker, {
     agentId: "new-agent",
@@ -104,7 +103,6 @@ it("selects a generated avatar directly in the creation dialog and clears busy o
     footerGeneration: true,
     onSelect,
     onReset,
-    onBusyChange,
     onActionsReady: (next) => {
       actionsRef.current = next;
     },
@@ -125,12 +123,12 @@ it("selects a generated avatar directly in the creation dialog and clears busy o
   assert(actions);
   const generation = actions.generate();
   flush();
-  expect(onBusyChange).toHaveBeenLastCalledWith(true);
+  expect(actions.footerState().busy).toBe(true);
   pending.resolve(generated);
   await generation;
   await waitForFast(() => expect(onSelect).toHaveBeenCalledExactlyOnceWith(avatar));
   expect(actions.footerState().generated).toBe(true);
-  expect(onBusyChange).toHaveBeenLastCalledWith(false);
+  expect(actions.footerState().busy).toBe(false);
   actions.reset();
   flush();
   expect(actions.footerState().generated).toBe(false);

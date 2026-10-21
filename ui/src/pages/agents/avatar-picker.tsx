@@ -1,6 +1,5 @@
 import {
   action,
-  createEffect,
   createMemo,
   createOptimistic,
   createSignal,
@@ -41,6 +40,7 @@ export type AvatarPickerFooterState = {
   mode: Mode;
   canGenerate: boolean;
   generated: boolean;
+  busy: boolean;
 };
 
 export type AvatarPickerActions = {
@@ -56,7 +56,6 @@ export type AvatarPickerProps = {
   onSelect: (dataUrl: string) => void;
   onUpload: (file: File) => void;
   onGenerate: (prompt: string) => Promise<GeneratedAvatar>;
-  onBusyChange?: (busy: boolean) => void;
   footerGeneration?: boolean;
   onActionsReady?: (actions: AvatarPickerActions | null) => void;
   onReset?: () => void;
@@ -77,6 +76,7 @@ export function AvatarPicker(props: AvatarPickerProps) {
     mode: mode(),
     canGenerate: Boolean(prompt().trim()),
     generated: Boolean(candidate()),
+    busy: busy(),
   });
 
   // Each mode selection retires its action state, even when an old transport is still pending.
@@ -129,10 +129,6 @@ export function AvatarPicker(props: AvatarPickerProps) {
     };
   });
   const busy = () => command().busy();
-  createEffect(
-    () => [busy(), props.onBusyChange] as const,
-    ([nextBusy, onBusyChange]) => onBusyChange?.(nextBusy),
-  );
 
   const requireImage = (result: AvatarDataUrlResult) => {
     if (!result.ok) {
