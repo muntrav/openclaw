@@ -186,30 +186,6 @@ function heartbeatFixture(run: CrabboxCommandRunner) {
   return { provider, heartbeat, warnings };
 }
 
-it("does not allocate after cancellation during managed binary acquisition", async () => {
-  const acquisition = delayedBinary();
-  const runCommand = vi.fn<CrabboxCommandRunner>(async () => commandResult());
-  const provider = providerWithRawRunner(runCommand);
-  const controller = new AbortController();
-  const beginNodeEnrollment = vi.fn();
-  const provision = provider.provision(PROFILE, OPERATION_ID, {
-    beginNodeEnrollment,
-    signal: controller.signal,
-  });
-  const rejected = expect(provision).rejects.toMatchObject({ name: "AbortError" });
-
-  await acquisition.started;
-  controller.abort();
-  acquisition.resolve({
-    binary: path.resolve(path.sep, "managed", "crabbox"),
-    version: "999.0.0",
-  });
-  await rejected;
-
-  expect(runCommand).not.toHaveBeenCalled();
-  expect(beginNodeEnrollment).not.toHaveBeenCalled();
-});
-
 it.each([
   [undefined, "windows/wsl2", "windows --windows-mode wsl2"],
   ["windows/normal", undefined, "windows --windows-mode normal"],

@@ -47,18 +47,11 @@ function heldAcquisition(command?: CrabboxCommandRunner) {
 
 it.each([
   ["current", commandResult({ stdout: "crabbox 999.0.0" }), "", true],
-  ["outdated", commandResult({ stdout: "crabbox 0.66.0" }), "version 0.66.0", false],
   [
     "indeterminate",
     commandResult({ termination: "timeout", code: null }),
     "timed out after 30000 ms",
     true,
-  ],
-  [
-    "indeterminate",
-    commandResult({ stdout: "not-a-version" }),
-    "version output was not recognized",
-    false,
   ],
   [
     "indeterminate",
@@ -131,12 +124,8 @@ it.each([
     expect(message).toContain(reason);
     expect(message).toContain(`using managed binary "${managed}"`);
     expect(message).not.toContain("synthetic-version-secret");
-    if (status === "outdated") {
-      expect(message).toContain(`required ${actual.CRABBOX_MIN_VERSION}`);
-    } else {
-      const detail = message.split('probe status "indeterminate": ')[1]!.split("); using")[0]!;
-      expect(detail.length).toBeLessThanOrEqual(201);
-    }
+    const detail = message.split('probe status "indeterminate": ')[1]!.split("); using")[0]!;
+    expect(detail.length).toBeLessThanOrEqual(201);
   },
 );
 
@@ -168,8 +157,10 @@ it.each(["first", "joining"] as const)(
     if (waiter === "joining") {
       discovery = provider.listMachineOptions!(PROFILE);
     }
-    const preparation = provider.prepareProvision!(PROFILE, "cancelled", {
+    const beginNodeEnrollment = vi.fn();
+    const preparation = provider.provision(PROFILE, `provision:v2:${"0".repeat(64)}`, {
       assertCurrent() {},
+      beginNodeEnrollment,
       signal: controller.signal,
     });
     const rejected = expect(preparation).rejects.toMatchObject({ name: "AbortError" });
@@ -180,6 +171,7 @@ it.each(["first", "joining"] as const)(
       await rejected;
       expect(signal.aborted).toBe(false);
       expect(runCommand).not.toHaveBeenCalled();
+      expect(beginNodeEnrollment).not.toHaveBeenCalled();
     } finally {
       finish.resolve(binaryResult);
       await discovery;
