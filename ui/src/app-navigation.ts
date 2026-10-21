@@ -21,6 +21,7 @@ type NavigationPresentation = readonly [icon: IconName, titleKey: string, subtit
 // Workboard is plugin-owned and enters the zone through its Control UI descriptor.
 export const SIDEBAR_NAV_ROUTES = [
   "dashboards",
+  "agent-rooms",
   "usage",
   "cron",
   "tasks",
@@ -66,7 +67,7 @@ export type SidebarZoneEntry =
 
 // Keep the highest-value operational destinations visible on first use. Users
 // can still replace this route set through the customize menu.
-export const DEFAULT_SIDEBAR_ENTRIES = ["dashboards", "cron", "plugins"].map((route) =>
+export const DEFAULT_SIDEBAR_ENTRIES = ["dashboards", "agent-rooms", "cron", "plugins"].map((route) =>
   serializeSidebarEntry({ type: "route", route: route as SidebarNavRoute }),
 );
 
@@ -316,6 +317,7 @@ const NAVIGATION_PRESENTATION: Record<NavigationRouteId, NavigationPresentation>
   agents: ["bot", "tabs.agents", "subtitles.agents"],
   activity: ["activity", "tabs.activity", "subtitles.activity"],
   meetings: ["book", "tabs.meetings", "subtitles.meetings"],
+  "agent-rooms": ["users", "tabs.agentRooms", "subtitles.agentRooms"],
   apps: ["layoutGrid", "tabs.apps", "subtitles.apps"],
   portals: ["monitor", "tabs.portals", "subtitles.portals"],
   approvals: ["badgeCheck", "tabs.approvals", "subtitles.approvals"],
