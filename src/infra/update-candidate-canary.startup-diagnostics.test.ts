@@ -1,12 +1,10 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { tryListenOnPort } from "./ports-probe.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
+import { createCanaryProcessFixture } from "./update-candidate-canary.test-support.js";
 import * as rehearsals from "./update-candidate-rehearsal.js";
 import { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
-import { buildUpdateRehearsalPathEnv } from "./update-rehearsal-paths.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
@@ -51,18 +49,8 @@ it.each([
   ["timeout", "readiness timeout"],
 ] as const)("reports the closed startup cause for %s", async (diagnostic, expected) => {
   const root = await fs.realpath(dirs.make("canary-public-cause-"));
-  const stateDir = path.join(root, "state");
-  const configPath = path.join(stateDir, "openclaw.json");
-  await fs.mkdir(stateDir);
-  await fs.writeFile(configPath, "{}");
-  await fs.mkdir(path.join(root, "dist", "infra"), { recursive: true });
-  await fs.writeFile(path.join(root, "package.json"), '{"version":"2026.9.5","type":"module"}');
-  await fs.writeFile(
-    path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"),
-    "console.log(JSON.stringify({state: 2, agent: 3}));",
-  );
-  await fs.writeFile(
-    path.join(root, "dist", "index.js"),
+  const rehearsal = await createCanaryProcessFixture(
+    root,
     `
 const args = process.argv.slice(2);
 if (args.includes("--fix")) console.log("Doctor complete.");
@@ -86,23 +74,8 @@ else if (args.includes("gateway")) {
 }
 `,
   );
-  vi.spyOn(rehearsals, "prepareUpdateCandidateRehearsal").mockResolvedValueOnce({
-    stateDir,
-    configPath,
-    workspaceDir: stateDir,
-    port: await tryListenOnPort({ port: 0, host: "127.0.0.1" }),
-    env: buildUpdateRehearsalPathEnv(stateDir),
-    snapshotCapacity: {
-      reason: "explicit-tmpdir",
-      sqliteBytes: 0,
-      pluginBytes: 0,
-      requiredBytes: 0,
-      candidates: [],
-      selection: { kind: "explicit-tmpdir", directory: stateDir },
-    },
-    cleanupDirectories: [],
-    cleanup: async () => {},
-  });
+  const { stateDir } = rehearsal;
+  vi.spyOn(rehearsals, "prepareUpdateCandidateRehearsal").mockResolvedValueOnce(rehearsal);
   const result = await validateUpdateCandidateCanary({
     root,
     config: {},

@@ -24,13 +24,9 @@ async function fixture(mebibytes: number | null, worker = false) {
   );
   for (const file of files) {
     await fs.mkdir(path.dirname(file), { recursive: true });
-    const db = openNodeSqliteDatabase(file);
-    try {
-      db.exec("CREATE TABLE evidence (value BLOB)");
-      db.prepare("INSERT INTO evidence VALUES (zeroblob(?))").run(8 * 1024 ** 2);
-    } finally {
-      db.close();
-    }
+    using db = openNodeSqliteDatabase(file);
+    db.exec("CREATE TABLE evidence (value BLOB)");
+    db.prepare("INSERT INTO evidence VALUES (zeroblob(?))").run(8 * 1024 ** 2);
   }
   if (worker) {
     await materializeUpdateCandidateStateWorker(root);
@@ -91,15 +87,11 @@ it("copies and verifies both databases within the admitted capacity", async () =
     expect(rehearsal.snapshotCapacity.requiredBytes).toBeLessThan(100 * 1024 ** 2);
     for (const file of f.files) {
       const copy = path.join(rehearsal.stateDir, path.relative(f.stateDir, file));
-      const db = openNodeSqliteDatabase(copy, { readOnly: true });
-      try {
-        expect(db.prepare("SELECT length(value) AS bytes FROM evidence").get()).toEqual({
-          bytes: 8 * 1024 ** 2,
-        });
-        expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
-      } finally {
-        db.close();
-      }
+      using db = openNodeSqliteDatabase(copy, { readOnly: true });
+      expect(db.prepare("SELECT length(value) AS bytes FROM evidence").get()).toEqual({
+        bytes: 8 * 1024 ** 2,
+      });
+      expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
     }
   } finally {
     await rehearsal.cleanup();

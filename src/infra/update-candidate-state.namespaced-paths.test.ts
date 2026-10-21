@@ -27,14 +27,10 @@ afterEach(async () => {
 
 async function createDatabase(file: string): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const db = openNodeSqliteDatabase(file);
-  try {
-    db.exec(
-      "PRAGMA user_version = 3; CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES ('preserved');",
-    );
-  } finally {
-    db.close();
-  }
+  using db = openNodeSqliteDatabase(file);
+  db.exec(
+    "PRAGMA user_version = 3; CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES ('preserved');",
+  );
 }
 
 function registerDatabases(stateDir: string, registrations: [string, string][]): void {
@@ -52,27 +48,15 @@ function registerDatabases(stateDir: string, registrations: [string, string][]):
 }
 
 function readRegisteredPath(stateDir: string, agentId: string): string {
-  const registry = openNodeSqliteDatabase(path.join(stateDir, "state", "openclaw.sqlite"));
-  try {
-    const row = registry
-      .prepare("SELECT path FROM agent_databases WHERE agent_id = ?")
-      .get(agentId);
-    assert(typeof row?.path === "string", "Expected a registered database path");
-    return row.path;
-  } finally {
-    registry.close();
-  }
+  using registry = openNodeSqliteDatabase(path.join(stateDir, "state", "openclaw.sqlite"));
+  const row = registry.prepare("SELECT path FROM agent_databases WHERE agent_id = ?").get(agentId);
+  assert(typeof row?.path === "string", "Expected a registered database path");
+  return row.path;
 }
 
 function expectPreservedEvidence(file: string): void {
-  const copied = openNodeSqliteDatabase(file);
-  try {
-    expect(copied.prepare("SELECT value FROM evidence").get()).toMatchObject({
-      value: "preserved",
-    });
-  } finally {
-    copied.close();
-  }
+  using copied = openNodeSqliteDatabase(file);
+  expect(copied.prepare("SELECT value FROM evidence").get()).toMatchObject({ value: "preserved" });
 }
 
 function runSnapshotWorker(
@@ -84,53 +68,32 @@ function runSnapshotWorker(
   });
 }
 
-// A namespaced registration outside the state root must keep one projection
-// identity: the copy and the rebound registry entry must name the same hashed
-// candidate-external destination.
-it.skipIf(process.platform !== "win32")(
-  "keeps a namespaced external registered database on one hashed projection identity",
-  async () => {
+// Both raw locators require a hashed projection, not in-root rebasing.
+it.skipIf(process.platform !== "win32").each(["namespaced external", "noncanonical in-root"])(
+  "keeps a %s registered database on its raw projection identity",
+  async (kind) => {
     const source = path.join(root, "source");
     const target = path.join(root, "copy");
-    const external = path.join(root, "external", "openclaw-agent.sqlite");
-    await createDatabase(external);
-    const namespacedExternal = `\\\\?\\${external}`;
-    registerDatabases(source, [["external", namespacedExternal]]);
+    const external = kind === "namespaced external";
+    const file = external
+      ? path.join(root, "external", "openclaw-agent.sqlite")
+      : path.join(source, "agents", "main", "agent", "openclaw-agent.sqlite");
+    await createDatabase(file);
+    const locator = external
+      ? `\\\\?\\${file}`
+      : source +
+        path.sep +
+        ["agents", "main", ".", "agent", "openclaw-agent.sqlite"].join(path.sep);
+    const agentId = external ? "external" : "main";
+    registerDatabases(source, [[agentId, locator]]);
     await runSnapshotWorker({
       stateDir: source,
       targetStateDir: target,
       config: {},
     });
-    const rebound = readRegisteredPath(target, "external");
+    const rebound = readRegisteredPath(target, agentId);
     expect(path.isAbsolute(rebound)).toBe(false);
     expect(rebound).toMatch(/^candidate-external/);
-    // The rebound registry entry must name the database the snapshot copied.
-    expectPreservedEvidence(path.join(target, rebound));
-  },
-);
-
-// A noncanonical in-root registration (dot segments) is not eligible for
-// rebasing: the copy and the rebound registry entry must keep the raw
-// locator's hashed candidate-external destination.
-it.skipIf(process.platform !== "win32")(
-  "keeps a noncanonical in-root registered database on its raw projection identity",
-  async () => {
-    const source = path.join(root, "source");
-    const target = path.join(root, "copy");
-    const canonical = path.join(source, "agents", "main", "agent", "openclaw-agent.sqlite");
-    await createDatabase(canonical);
-    const noncanonical =
-      source + path.sep + ["agents", "main", ".", "agent", "openclaw-agent.sqlite"].join(path.sep);
-    registerDatabases(source, [["main", noncanonical]]);
-    await runSnapshotWorker({
-      stateDir: source,
-      targetStateDir: target,
-      config: {},
-    });
-    const rebound = readRegisteredPath(target, "main");
-    expect(path.isAbsolute(rebound)).toBe(false);
-    expect(rebound).toMatch(/^candidate-external/);
-    // The rebound registry entry must name the database the snapshot copied.
     expectPreservedEvidence(path.join(target, rebound));
   },
 );

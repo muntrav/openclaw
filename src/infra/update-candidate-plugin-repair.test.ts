@@ -12,12 +12,12 @@ import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 
-async function write(file: string, content: string) {
+async function write(file: string, content: string | object) {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, content);
+  await fs.writeFile(file, typeof content === "string" ? content : JSON.stringify(content));
 }
 
-async function writeTree(root: string, files: Record<string, string>) {
+async function writeTree(root: string, files: Record<string, string | object>) {
   for (const [name, content] of Object.entries(files)) {
     await write(path.join(root, name), content);
   }
@@ -50,11 +50,11 @@ async function fixture(
   await write(path.join(candidateRoot, "package.json"), '{"name":"openclaw"}');
   await writeTree(plugin, {
     "package.json": '{"name":"demo","type":"module","openclaw":{"extensions":["./index.mjs"]}}',
-    "openclaw.plugin.json": JSON.stringify({
+    "openclaw.plugin.json": {
       id: "demo",
       configSchema: { type: "object", properties: {} },
       ...(surface === "doctor" ? { doctorContract: { configRepair: true } } : {}),
-    }),
+    },
     "index.mjs":
       surface === "doctor" ? 'export default { id: "demo", register() {} };' : siblingImport,
     ...(surface === "doctor"
@@ -126,8 +126,7 @@ it.each(["directory", "file", "alias", "install-record"] as const)(
     expect(before.stderr.toString()).toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
     expect(before.stderr.toString()).toContain("shared/value.js");
 
-    const repaired = await f.repair();
-    expect(repaired.copiedFiles).toBeGreaterThan(0);
+    expect((await f.repair()).copiedFiles).toBeGreaterThan(0);
     expect(await fs.readFile(entry)).toEqual(original);
     expect(await fs.readFile(f.copiedEntry)).toEqual(copied);
     const plugins = path.dirname(f.plugin);
@@ -140,8 +139,7 @@ it.each(["directory", "file", "alias", "install-record"] as const)(
       await fs.rename(hidden, plugins);
     }
     await expectMissing(path.join(f.copiedShared, "unrelated.txt"));
-    const repeated = await f.repair();
-    expect(repeated.copiedFiles).toBe(0);
+    expect((await f.repair()).copiedFiles).toBe(0);
   },
 );
 
@@ -199,16 +197,12 @@ it.each(["external file URL", "invalid optional source"])(
 it("preserves staged bundled aliases while completing an external plugin", async () => {
   const f = await fixture();
   const bundled = path.join(f.candidateRoot, "dist", "extensions", "staged");
-  await write(
-    path.join(bundled, "package.json"),
-    JSON.stringify({ name: "staged", openclaw: { extensions: ["./index.mjs"] } }),
-  );
-  await write(
-    path.join(bundled, "openclaw.plugin.json"),
-    JSON.stringify({ id: "staged", configSchema: { type: "object", properties: {} } }),
-  );
   const stagedBytes = 'export default { id: "staged", register() {} };';
-  await fs.writeFile(path.join(bundled, "index.mjs"), stagedBytes);
+  await writeTree(bundled, {
+    "package.json": { name: "staged", openclaw: { extensions: ["./index.mjs"] } },
+    "openclaw.plugin.json": { id: "staged", configSchema: { type: "object", properties: {} } },
+    "index.mjs": stagedBytes,
+  });
   f.config.plugins!.load!.paths!.push(bundled);
   const pathsBefore = [...f.config.plugins!.load!.paths!];
 
@@ -274,21 +268,19 @@ it.each(["undeclared", "dependencies"])(
     const f = await fixture();
     const name = "rehearsal-optional-vendor";
     const ancestor = path.join(f.root, "node_modules", name);
-    await write(path.join(ancestor, "package.json"), JSON.stringify({ name, main: "index.cjs" }));
-    await fs.writeFile(path.join(ancestor, "index.cjs"), "module.exports = 'foreign';");
+    await writeTree(ancestor, {
+      "package.json": { name, main: "index.cjs" },
+      "index.cjs": "module.exports = 'foreign';",
+    });
     const vendor = path.join(f.copiedPlugin, "node_modules", "vendor");
-    await write(
-      path.join(vendor, "package.json"),
-      JSON.stringify({
+    await writeTree(vendor, {
+      "package.json": {
         name: "vendor",
         main: "index.cjs",
         ...(declaration === "undeclared" ? {} : { [declaration]: { [name]: "1.0.0" } }),
-      }),
-    );
-    await fs.writeFile(
-      path.join(vendor, "index.cjs"),
-      `exports.optional = () => { try { return require(${JSON.stringify(name)}); } catch { return 'fallback'; } };`,
-    );
+      },
+      "index.cjs": `exports.optional = () => { try { return require(${JSON.stringify(name)}); } catch { return 'fallback'; } };`,
+    });
     await fs.writeFile(f.copiedEntry, 'import "vendor";');
 
     if (declaration !== "undeclared") {
@@ -310,10 +302,7 @@ it.each(["undeclared", "dependencies"])(
     await fs.mkdir(internal, { recursive: true });
     await fs.copyFile(path.join(ancestor, "package.json"), path.join(internal, "package.json"));
     await fs.writeFile(path.join(internal, "index.cjs"), "module.exports = 'private';");
-    expect(await f.repair()).toEqual({
-      copiedFiles: 0,
-      warnings: [],
-    });
+    expect(await f.repair()).toEqual({ copiedFiles: 0, warnings: [] });
   },
 );
 

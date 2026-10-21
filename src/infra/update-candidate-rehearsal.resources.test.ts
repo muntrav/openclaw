@@ -71,83 +71,57 @@ async function fixture(sizeMiB = 0) {
   const stateDir = path.join(root, "source");
   const file = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const db = openNodeSqliteDatabase(file);
+  using db = openNodeSqliteDatabase(file);
   db.exec("CREATE TABLE evidence (value BLOB)");
   db.prepare("INSERT INTO evidence VALUES (zeroblob(?))").run(sizeMiB * 1024 * 1024);
-  db.close();
   return { root, stateDir, file };
 }
 
-it.each([undefined, true])(
-  "uses the requested integrity coverage for a disposable rehearsal (full=%s)",
-  async (fullIntegrityCheck) => {
+it.each([
+  { table: "retained", index: "retained_value", fullIntegrityCheck: undefined, rejects: false },
+  { table: "retained", index: "retained_value", fullIntegrityCheck: true, rejects: true },
+  { table: "state_leases", index: "lease_value", fullIntegrityCheck: undefined, rejects: true },
+])(
+  "checks $table indexes before rewriting a rehearsal (full=$fullIntegrityCheck)",
+  async ({ table, index, fullIntegrityCheck, rejects }) => {
     const input = await fixture();
-    const db = openNodeSqliteDatabase(input.file);
-    try {
+    const file =
+      table === "retained" ? input.file : path.join(input.stateDir, "state/openclaw.sqlite");
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    {
+      using db = openNodeSqliteDatabase(file);
       db.exec(`
-        CREATE TABLE retained(value TEXT, alternate TEXT);
-        CREATE INDEX retained_value ON retained(value);
-        INSERT INTO retained VALUES ('alpha', 'zeta'), ('beta', 'eta');
+        CREATE TABLE ${table}(value TEXT, alternate TEXT);
+        CREATE INDEX ${index} ON ${table}(value);
+        INSERT INTO ${table} VALUES ('alpha', 'zeta'), ('beta', 'eta');
       `);
       db.enableDefensive?.(false);
       db.exec(`
         PRAGMA writable_schema = ON;
-        UPDATE sqlite_schema SET sql = 'CREATE INDEX retained_value ON retained(alternate)'
-        WHERE name = 'retained_value';
+        UPDATE sqlite_schema SET sql = 'CREATE INDEX ${index} ON ${table}(alternate)'
+        WHERE name = '${index}';
         PRAGMA writable_schema = OFF;
       `);
-    } finally {
-      db.close();
     }
-    const before = await fs.readFile(input.file);
+    const before = await fs.readFile(file);
     const pending = prepare(input, { fullIntegrityCheck });
-    if (fullIntegrityCheck) {
-      await expect(pending).rejects.toThrow(/integrity_check.*retained_value/su);
+    if (rejects) {
+      await expect(pending).rejects.toThrow(new RegExp(`integrity_check.*${index}`, "su"));
     } else {
       await withRehearsal(pending, async (rehearsal) => {
-        const copied = openNodeSqliteDatabase(
+        using copied = openNodeSqliteDatabase(
           path.join(rehearsal.stateDir, path.relative(input.stateDir, input.file)),
           { readOnly: true },
         );
-        try {
-          expect(copied.prepare("SELECT * FROM retained NOT INDEXED").all()).toEqual([
-            { value: "alpha", alternate: "zeta" },
-            { value: "beta", alternate: "eta" },
-          ]);
-        } finally {
-          copied.close();
-        }
+        expect(copied.prepare("SELECT * FROM retained NOT INDEXED").all()).toEqual([
+          { value: "alpha", alternate: "zeta" },
+          { value: "beta", alternate: "eta" },
+        ]);
       });
     }
-    expect(await fs.readFile(input.file)).toEqual(before);
+    expect(await fs.readFile(file)).toEqual(before);
   },
 );
-
-it("checks indexes on shared tables before rewriting the rehearsal", async () => {
-  const input = await fixture();
-  const shared = path.join(input.stateDir, "state", "openclaw.sqlite");
-  await fs.mkdir(path.dirname(shared), { recursive: true });
-  const db = openNodeSqliteDatabase(shared);
-  try {
-    db.exec(`
-      CREATE TABLE state_leases(value TEXT, alternate TEXT);
-      CREATE INDEX lease_value ON state_leases(value);
-      INSERT INTO state_leases VALUES ('alpha', 'zeta'), ('beta', 'eta');
-    `);
-    db.enableDefensive?.(false);
-    db.exec(`
-      PRAGMA writable_schema = ON;
-      UPDATE sqlite_schema SET sql = 'CREATE INDEX lease_value ON state_leases(alternate)'
-      WHERE name = 'lease_value';
-      PRAGMA writable_schema = OFF;
-    `);
-  } finally {
-    db.close();
-  }
-  const before = await fs.readFile(shared);
-  await expect(prepare(input)).rejects.toThrow(/integrity_check.*lease_value/su);
-  expect(await fs.readFile(shared)).toEqual(before);
-});
 
 async function syntheticSnapshotWorker(body: string) {
   const root = tempDirs.make("candidate-progress-");
@@ -246,13 +220,12 @@ it("reaps an expired snapshot worker before removing its database and WAL scratc
 it("keeps the SQLite startup floor when the caller supplies a smaller timeout", async () => {
   const f = await fixture(8);
   await withRehearsal(prepare(f, { timeoutMs: 1 }), async (rehearsal) => {
-    const db = openNodeSqliteDatabase(
+    using db = openNodeSqliteDatabase(
       path.join(rehearsal.stateDir, "agents/main/agent/openclaw-agent.sqlite"),
     );
     expect(db.prepare("SELECT length(value) AS bytes FROM evidence").get()).toEqual({
       bytes: 8 * 1024 * 1024,
     });
-    db.close();
   });
 });
 

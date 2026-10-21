@@ -3,13 +3,15 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { tryListenOnPort } from "./ports-probe.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
-import { canaryOutcomeStep, renderSteps } from "./update-candidate-canary.test-support.js";
+import {
+  canaryOutcomeStep,
+  createCanaryProcessFixture,
+  renderSteps,
+} from "./update-candidate-canary.test-support.js";
 import * as rehearsals from "./update-candidate-rehearsal.js";
 import { writeUpdateRunReportArtifact } from "./update-failure-report-artifact.js";
 import { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
-import { buildUpdateRehearsalPathEnv } from "./update-rehearsal-paths.js";
 import * as ledger from "./update-run-ledger.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
@@ -34,18 +36,8 @@ it.each([
   "preserves completed checks across a real child exit stall (%s)",
   async (mode) => {
     const root = await fs.realpath(dirs.make("canary-exit-"));
-    const stateDir = path.join(root, "state");
-    const configPath = path.join(stateDir, "openclaw.json");
-    await fs.mkdir(stateDir);
-    await fs.writeFile(configPath, "{}");
-    await fs.mkdir(path.join(root, "dist", "infra"), { recursive: true });
-    await fs.writeFile(path.join(root, "package.json"), '{"version":"2026.9.5","type":"module"}');
-    await fs.writeFile(
-      path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"),
-      "console.log(JSON.stringify({state: 2, agent: 3}));",
-    );
-    await fs.writeFile(
-      path.join(root, "dist", "index.js"),
+    const rehearsal = await createCanaryProcessFixture(
+      root,
       `import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -93,23 +85,8 @@ if (args.includes("--fix")) {
 }
 `,
     );
-    vi.spyOn(rehearsals, "prepareUpdateCandidateRehearsal").mockResolvedValueOnce({
-      stateDir,
-      configPath,
-      workspaceDir: stateDir,
-      port: await tryListenOnPort({ port: 0, host: "127.0.0.1" }),
-      env: buildUpdateRehearsalPathEnv(stateDir),
-      snapshotCapacity: {
-        reason: "explicit-tmpdir",
-        sqliteBytes: 0,
-        pluginBytes: 0,
-        requiredBytes: 0,
-        candidates: [],
-        selection: { kind: "explicit-tmpdir", directory: stateDir },
-      },
-      cleanupDirectories: [],
-      cleanup: async () => {},
-    });
+    const { stateDir } = rehearsal;
+    vi.spyOn(rehearsals, "prepareUpdateCandidateRehearsal").mockResolvedValueOnce(rehearsal);
     const options = { env: { OPENCLAW_STATE_DIR: path.join(root, "ledger") } };
     const run =
       mode === "doctor-signal" ? ledger.createUpdateRun({ trigger: "cli" }, options) : undefined;
