@@ -121,11 +121,9 @@ export function AgentRoomsPage() {
     });
   };
 
+  // Keep room turns separate from each agent's normal `main` conversation.
   const sessionKey = (agentId: string) =>
-    buildAgentMainSessionKey({
-      agentId,
-      mainKey: agentsProjection.read().agentsList?.mainKey,
-    });
+    `agent:${agentId}:room:agent-room`;
 
   const readHistory = (gatewayClient: GatewayClient, key: string) =>
     gatewayClient.request<ChatHistory>("chat.history", { sessionKey: key, limit: HISTORY_LIMIT });
