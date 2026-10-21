@@ -144,12 +144,9 @@ function readColumnContract(
   tableName: string,
   columnName: string,
 ): Record<string, unknown> | undefined {
-  const column = (
-    database.prepare(`PRAGMA table_xinfo("${tableName}")`).all() as Array<Record<string, unknown>>
-  ).find((candidate) => candidate.name === columnName);
-  if (!column) {
-    return undefined;
-  }
-  const { dflt_value, hidden, name, notnull, pk, type } = column;
-  return { dflt_value, hidden, name, notnull, pk, type };
+  return database
+    .prepare(
+      'SELECT dflt_value, hidden, name, "notnull", pk, type FROM pragma_table_xinfo(?) WHERE name = ?',
+    )
+    .get(tableName, columnName);
 }
