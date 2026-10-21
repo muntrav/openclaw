@@ -1,4 +1,4 @@
-import { createMemo, createSignal, lazy, Loading, onCleanup, Show } from "solid-js";
+import { createMemo, createStore, lazy, Loading, onCleanup, Show } from "solid-js";
 import { Icon } from "../../components/solid/icon.tsx";
 import { formatUiError } from "../../lib/format-error.ts";
 import { t } from "../../lib/reactive/i18n.ts";
@@ -100,41 +100,49 @@ export function createChatProviderReview(deps: {
       .filter(Boolean)
       .join(" ");
   // A new review resets local presentation; terminal receipts remain until an explicit retry.
-  const [presentation, setPresentation] = createSignal<ReviewPresentation>((previous) => {
-    const current = binding();
-    const source = deps.source();
-    if (previous?.binding !== current) {
-      return {
-        binding: current,
-        open: false,
-        loading: false,
-        pending: false,
-        submitted: false,
-        refreshing: false,
-        error: null,
-        failedAttemptId: null,
-      };
-    }
-    const row = source && chatProviderReviewRow(source.state);
-    return current &&
-      !previous.pending &&
-      !previous.refreshing &&
-      continuationInFlight !== current &&
-      refreshInFlight !== current &&
-      current.attemptedRunId &&
-      previous.failedAttemptId !== current.attemptedRunId &&
-      row?.lastRunId === current.attemptedRunId &&
-      row.hasActiveRun === false &&
-      !row.activeRunIds?.length &&
-      (row.status === "failed" || row.status === "timeout" || row.status === "killed")
-      ? {
-          ...previous,
-          submitted: false,
-          error: failureMessage(row.lastRunError),
-          failedAttemptId: current.attemptedRunId,
-        }
-      : previous;
+  const initialPresentation = (current: ReviewBinding | null): ReviewPresentation => ({
+    binding: current,
+    open: false,
+    loading: false,
+    pending: false,
+    submitted: false,
+    refreshing: false,
+    error: null,
+    failedAttemptId: null,
   });
+  const [presentation, setPresentation] = createStore(
+    (previous) => {
+      const current = binding();
+      const source = deps.source();
+      if (previous?.binding !== current) {
+        return initialPresentation(current);
+      }
+      const row = source && chatProviderReviewRow(source.state);
+      if (
+        current &&
+        !previous.pending &&
+        !previous.refreshing &&
+        continuationInFlight !== current &&
+        refreshInFlight !== current &&
+        current.attemptedRunId &&
+        previous.failedAttemptId !== current.attemptedRunId &&
+        row?.lastRunId === current.attemptedRunId &&
+        row.hasActiveRun === false &&
+        !row.activeRunIds?.length &&
+        (row.status === "failed" || row.status === "timeout" || row.status === "killed")
+      ) {
+        previous.submitted = false;
+        previous.error = failureMessage(row.lastRunError);
+        previous.failedAttemptId = current.attemptedRunId;
+      }
+      return undefined;
+    },
+    initialPresentation(null),
+    {
+      // Bindings carry synchronous request authority; only presentation fields are reactive.
+      shallow: true,
+    },
+  );
   const isCurrent = (current: ReviewBinding) =>
     !disposed && binding() === current && matches(current);
   const update = (
@@ -142,7 +150,9 @@ export function createChatProviderReview(deps: {
     patch: Partial<Omit<ReviewPresentation, "binding">>,
   ) => {
     if (current && isCurrent(current)) {
-      setPresentation((previous) => ({ ...previous, ...patch }));
+      setPresentation((previous) => {
+        Object.assign(previous, patch);
+      });
     }
   };
   const recordFailedAttempt = (current: ReviewBinding, error: string) => {
@@ -173,7 +183,7 @@ export function createChatProviderReview(deps: {
     }
   };
   const view = createMemo(() => {
-    const activity = presentation();
+    const activity = presentation;
     const current = binding();
     const source = deps.source();
     return {
@@ -188,7 +198,7 @@ export function createChatProviderReview(deps: {
     view,
     async open() {
       const current = binding();
-      if (!current || !isCurrent(current) || presentation().loading) {
+      if (!current || !isCurrent(current) || presentation.loading) {
         return;
       }
       update(current, { loading: true });
@@ -208,7 +218,7 @@ export function createChatProviderReview(deps: {
       if (
         !current ||
         !isCurrent(current) ||
-        !presentation().open ||
+        !presentation.open ||
         !deps.source()?.canWrite ||
         continuationInFlight === current ||
         !current.review.canContinue ||
@@ -217,7 +227,7 @@ export function createChatProviderReview(deps: {
       ) {
         return;
       }
-      const activity = presentation();
+      const activity = presentation;
       const failedAttempt =
         current.attemptedRunId !== null && activity.failedAttemptId === current.attemptedRunId;
       if (current.accepted && !failedAttempt) {
