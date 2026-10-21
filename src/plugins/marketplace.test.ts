@@ -173,10 +173,7 @@ function expectLocalMarketplaceInstallResult(
   marketplaceSource: string,
 ) {
   expect(installPluginInput().path).toBe(pluginDir);
-  expectMarketplaceInstallSuccess(result, {
-    marketplacePlugin: pluginName,
-    marketplaceSource,
-  });
+  expectMarketplaceInstallSuccess(result, { marketplacePlugin: pluginName, marketplaceSource });
 }
 
 describe("marketplace plugins", () => {
@@ -475,10 +472,7 @@ describe("marketplace plugins", () => {
     await withKnownMarketplaceRegistry({ broken: { source: { source: "path" } } }, async () => {
       const result = await listMarketplacePlugins({ marketplace: "broken" });
 
-      expect(result).toEqual({
-        ok: false,
-        error: "unsupported marketplace source: broken",
-      });
+      expect(result).toEqual({ ok: false, error: "unsupported marketplace source: broken" });
       expectNoNetwork();
     });
   });

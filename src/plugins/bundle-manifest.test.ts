@@ -222,22 +222,23 @@ describe("bundle manifest parsing", () => {
   });
 
   it("keeps client-specific and native formats ahead of portable Agent Plugins", () => {
-    const claudeRoot = fixture({
-      [CLAUDE_BUNDLE_MANIFEST_RELATIVE_PATH]: { name: "Claude" },
-      [AGENT_BUNDLE_MANIFEST_RELATIVE_PATH]: agentManifest({ name: "Agent" }),
-    });
+    const claudeRoot = agentFixture(
+      {},
+      {
+        [CLAUDE_BUNDLE_MANIFEST_RELATIVE_PATH]: { name: "Claude" },
+      },
+    );
     expect(detectBundleManifestFormat(claudeRoot)).toBe("claude");
 
-    const nativeRoot = fixture({
-      "openclaw.plugin.json": { id: "native", configSchema: { type: "object" } },
-      [AGENT_BUNDLE_MANIFEST_RELATIVE_PATH]: agentManifest({ name: "Agent" }),
-    });
+    const nativeRoot = agentFixture(
+      {},
+      {
+        "openclaw.plugin.json": { id: "native", configSchema: { type: "object" } },
+      },
+    );
     expect(detectBundleManifestFormat(nativeRoot)).toBeNull();
 
-    const entryRoot = fixture({
-      "index.ts": "export default {}",
-      [AGENT_BUNDLE_MANIFEST_RELATIVE_PATH]: agentManifest({ name: "Agent" }),
-    });
+    const entryRoot = agentFixture({}, { "index.ts": "export default {}" });
     expect(detectBundleManifestFormat(entryRoot)).toBe("agent");
   });
 
@@ -267,15 +268,8 @@ describe("bundle manifest parsing", () => {
     });
 
     expect(detectBundleManifestFormat(rootDir)).toBe(expected);
+    expectLoadError(rootDir, "agent", `expected $schema ${AGENT_BUNDLE_MANIFEST_SCHEMA}`);
   });
-
-  it.each([undefined, "https://wrong.example/plugin.schema.json"])(
-    "rejects Agent Plugins schema %s",
-    ($schema) => {
-      const rootDir = agentFixture({ $schema });
-      expectLoadError(rootDir, "agent", `expected $schema ${AGENT_BUNDLE_MANIFEST_SCHEMA}`);
-    },
-  );
 
   it("rejects Agent Plugins manifests with missing or empty names", () => {
     for (const name of [undefined, "   "]) {

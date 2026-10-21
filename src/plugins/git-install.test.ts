@@ -111,15 +111,19 @@ function mockSuccessfulPackageInstall(
       for (const [name, content] of Object.entries(files)) {
         await fs.writeFile(path.join(packageDir, name), content);
       }
-      return {
-        ok: true,
-        pluginId: "demo",
-        targetDir: packageDir,
-        ...(version ? { version } : {}),
-        extensions: ["index.js"],
-      };
+      return packageInstallResult(packageDir, version);
     },
   );
+}
+
+function packageInstallResult(targetDir: string, version: string | null = "1.2.3") {
+  return {
+    ok: true,
+    pluginId: "demo",
+    targetDir,
+    ...(version ? { version } : {}),
+    extensions: ["index.js"],
+  };
 }
 
 function mockPreparedInstall(files: Record<string, string> = {}, version: string | null = "1.2.3") {
@@ -239,15 +243,13 @@ describe("installPluginFromGitSpec", () => {
           "--no-fund",
         ]),
       );
-      for (const index of [0, 2]) {
-        expect(runCommandWithTimeoutMock.mock.calls[index]?.[1]?.timeoutMs).toBe(gitWork);
-      }
-      for (const index of [1, 3]) {
-        expect(runCommandWithTimeoutMock.mock.calls[index]?.[1]?.timeoutMs).toBe(
-          timeoutMs ?? 120_000,
-        );
-      }
-      expect(runCommandWithTimeoutMock.mock.calls[4]?.[1]?.timeoutMs).toBe(npmWork);
+      expect(runCommandWithTimeoutMock.mock.calls.map(([, options]) => options.timeoutMs)).toEqual([
+        gitWork,
+        timeoutMs ?? 120_000,
+        gitWork,
+        timeoutMs ?? 120_000,
+        npmWork,
+      ]);
       expect(firstInstallOptions()).toMatchObject({
         expectedPluginId: "demo",
         packageDir: cloneArgv[5],
@@ -428,13 +430,7 @@ describe("installPluginFromGitSpec", () => {
     const gitDir = path.join(caseDir, "git");
     mockGitCommands("", "abc123\n");
     installPluginFromInstalledPackageDirMock.mockImplementation(
-      async (params: { packageDir: string }) => ({
-        ok: true,
-        pluginId: "demo",
-        targetDir: params.packageDir,
-        version: "1.2.3",
-        extensions: ["index.js"],
-      }),
+      async ({ packageDir }: { packageDir: string }) => packageInstallResult(packageDir),
     );
 
     const result = await install({ gitDir, dryRun: true });

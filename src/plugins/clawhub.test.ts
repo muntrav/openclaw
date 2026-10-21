@@ -68,9 +68,7 @@ vi.mock("../version.js", async (importOriginal) => ({
 
 // mock-isolation: Fixture installation results avoid writing host plugin state.
 vi.mock("./install.js", () => ({
-  PLUGIN_INSTALL_ERROR_CODE: {
-    PLUGIN_ID_MISMATCH: "plugin_id_mismatch",
-  },
+  PLUGIN_INSTALL_ERROR_CODE: { PLUGIN_ID_MISMATCH: "plugin_id_mismatch" },
   installPluginFromArchive: mocks.installArchive,
 }));
 
@@ -97,11 +95,7 @@ async function useRealInstaller(archivePath: string) {
   mocks.installArchive.mockImplementationOnce(installPluginFromArchive);
   return path.join(path.dirname(archivePath), "extensions");
 }
-const npmArtifact = {
-  kind: "npm-pack",
-  format: "tgz",
-  sha256: DEMO_CLAWPACK_SHA256,
-};
+const npmArtifact = { kind: "npm-pack", format: "tgz", sha256: DEMO_CLAWPACK_SHA256 };
 const npmProvenance = { npmIntegrity: "sha512-clawpack", npmShasum: "1".repeat(40) };
 const npmDownload = {
   archivePath: "/tmp/clawhub-demo/demo-2026.3.22.tgz",
@@ -245,9 +239,7 @@ it("does not publish a ClawHub plugin after authority closes during artifact rev
     ok: false,
     error: expect.stringContaining("plugin installation authority closed"),
   });
-  await expect(fs.stat(path.join(extensionsDir, "demo"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
+  await expect(fs.stat(path.join(extensionsDir, "demo"))).rejects.toMatchObject({ code: "ENOENT" });
   expect(mocks.cleanup).toHaveBeenCalledTimes(1);
 });
 
@@ -835,10 +827,7 @@ it("rejects fallback verification when a file hash drifts from files[] metadata"
 });
 
 it("rejects archive path traversal before install work", async () => {
-  await mockArchive({
-    entries: { "../extra.txt": "unsafe" },
-    files: [manifestFile],
-  });
+  await mockArchive({ entries: { "../extra.txt": "unsafe" }, files: [manifestFile] });
   expectArchiveFailure(
     await installDemo(),
     expect.stringMatching(
@@ -976,10 +965,9 @@ it.each([
   const { createHookRunner } = await import("./hooks.js");
   const { createMockPluginRegistry } = await import("./hooks.test-helpers.js");
   const hookRunnerGlobal = await import("./hook-runner-global.js");
-  const rejectInstall = vi.fn().mockReturnValue({
-    block: true,
-    blockReason: "registry policy rejected fixture",
-  });
+  const rejectInstall = vi
+    .fn()
+    .mockReturnValue({ block: true, blockReason: "registry policy rejected fixture" });
   const hookRunner = createHookRunner(
     createMockPluginRegistry([
       { pluginId: "registry-policy", hookName: "before_install", handler: rejectInstall },

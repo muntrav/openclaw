@@ -22,7 +22,7 @@ type RouteParams = Omit<Parameters<typeof registerRoute>[0], "auth" | "handler">
   Partial<Pick<Parameters<typeof registerRoute>[0], "auth" | "handler">>;
 
 function registerHttp(params: RouteParams) {
-  return registerRoute({ auth: "plugin", handler: vi.fn(), ...params });
+  return registerRoute({ auth: "plugin", handler: vi.fn(), throwOnFailure: true, ...params });
 }
 
 function expectRoutes(registry: Registry, ...routes: Partial<Registry["httpRoutes"][number]>[]) {
@@ -69,8 +69,7 @@ function registerLeasedRoute(
   owner: ReturnType<typeof createLease>,
   params: RouteParams,
 ) {
-  const run = () => registerHttp({ throwOnFailure: true, ...params });
-  return withHttpRegistry(registry, run, owner.lease);
+  return withHttpRegistry(registry, () => registerHttp(params), owner.lease);
 }
 
 function registerStaticRoute(
@@ -101,27 +100,18 @@ function registryWithService(Service: new () => { id: string; start: () => void 
 }
 
 function createLease() {
-  let active = true;
+  const lease = createPluginRuntimeCapabilityLease("test owner");
   const cleanups = new Set<() => void>();
   const retain = vi.fn((cleanup: () => void) => {
-    const release = () => {
-      if (cleanups.delete(release)) {
-        cleanup();
-      }
+    const tracked = () => {
+      cleanups.delete(tracked);
+      cleanup();
     };
-    cleanups.add(release);
+    const release = lease.retain(tracked);
+    cleanups.add(tracked);
     return release;
   });
-  return {
-    lease: { isActive: () => active, retain },
-    cleanups,
-    revoke: () => {
-      active = false;
-      for (const cleanup of cleanups) {
-        cleanup();
-      }
-    },
-  };
+  return { lease: { ...lease, retain }, cleanups, revoke: lease.revoke };
 }
 
 describe("registerPluginHttpRoute", () => {
@@ -162,7 +152,6 @@ describe("registerPluginHttpRoute", () => {
         ...handoffRoute,
         ...changed,
         registry: next,
-        throwOnFailure: true,
       });
       expect(() => adoptHandoffs(registry, next)).toThrow();
       expect(registry.httpRoutes).toEqual([placeholder]);
@@ -192,7 +181,6 @@ describe("registerPluginHttpRoute", () => {
         ...sharedRoute,
         registry: next,
         handler,
-        throwOnFailure: true,
       });
       if (swapRegistry) {
         adoptHandoffs(registry, next);
@@ -206,7 +194,6 @@ describe("registerPluginHttpRoute", () => {
         ...sharedRoute,
         registry: next,
         handler: secondHandler,
-        throwOnFailure: true,
       });
       secondHandoff.release();
       expect(next.httpRoutes.map((entry) => entry.handler)).toEqual([secondHandler]);
@@ -271,7 +258,6 @@ describe("registerPluginHttpRoute", () => {
       {
         path: "/PLUGINS//SHARED/",
         reuseExistingSameOwner: true,
-        throwOnFailure: true,
       },
       secondOwner,
     );
@@ -335,7 +321,6 @@ describe("registerPluginHttpRoute", () => {
     register({
       path: "/webhooks/sms",
       replaceExisting: true,
-      throwOnFailure: true,
     });
 
     expect(registry.httpRoutes.map((route) => route.source)).toEqual(["prefix", "sms-exact"]);
@@ -476,7 +461,6 @@ describe("registerPluginHttpRoute", () => {
               registerHttp({
                 path: "/retired-webhook",
                 handler: () => true,
-                throwOnFailure: true,
               }),
             ),
           ).toThrow("plugin HTTP route owner is no longer active");
@@ -524,7 +508,6 @@ describe("registerPluginHttpRoute", () => {
           registerHttp({
             path: "/adopted-webhook",
             handler,
-            throwOnFailure: true,
           }),
         );
         expect(currentRegistry.httpRoutes).toEqual([
@@ -594,7 +577,6 @@ describe("registerPluginHttpRoute", () => {
           const register = () =>
             registerHttp({
               path: "/late-webhook",
-              throwOnFailure: true,
               ...(pluginId ? { pluginId } : {}),
               ...(explicitRegistry ? { registry } : {}),
             });
@@ -634,7 +616,7 @@ describe("registerPluginHttpRoute", () => {
         () =>
           withHttpRegistry(
             nestedRegistry,
-            () => registerHttp({ path: "/independent-webhook", throwOnFailure: true }),
+            () => registerHttp({ path: "/independent-webhook" }),
             childLease ? child.lease : undefined,
           ),
         parent.lease,
