@@ -2,7 +2,6 @@ import "./update-command-service-maintenance.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, expect, it } from "vitest";
-import { createMockGatewayService } from "../../daemon/service.test-helpers.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import {
   gatewayCommand,
@@ -13,7 +12,7 @@ import {
   type PreManagedServiceStop,
 } from "./update-command-service-maintenance.js";
 
-const { mocks, withServiceHome, fixtureGatewayPid } =
+const { withServiceHome, fixtureGatewayPid, mockMaintenanceService } =
   await import("./update-command-service-maintenance.test-support.js");
 
 beforeEach(() => mockProcessPlatform("linux"));
@@ -43,7 +42,7 @@ function mockService(
   managerUid: () => number | undefined,
   seenRoutes?: Array<string | undefined>,
 ) {
-  const service = createMockGatewayService({
+  return mockMaintenanceService(home, {
     readCommand: async (env) => {
       seenRoutes?.push(env.DBUS_SESSION_BUS_ADDRESS);
       return gatewayCommand(home);
@@ -53,10 +52,7 @@ function mockService(
       pid: fixtureGatewayPid,
       systemd: { managerUid: managerUid() },
     }),
-    isLoaded: async () => true,
   });
-  mocks.service.mockReturnValue(service);
-  return service;
 }
 
 it.each([

@@ -8,12 +8,8 @@ import {
   CommandProcessCleanupError,
   hasCommandProcessCleanupError,
 } from "../../process/exec-result.js";
-import {
-  resolveCommandProcessSignal,
-  retainCommandProcessCleanup,
-} from "../../process/exec-spawn.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
+import { retainedInspectionCleanup } from "./update-command-inspection-settlement.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import { maintenanceDefaults } from "./update-command-service-fixtures.test-support.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
@@ -62,8 +58,7 @@ afterEach(() => {
 
 type Outcome = "forced" | "uncertain" | "nested failure" | "revoked";
 function pendingCleanup(outcome: Outcome) {
-  const cleanup = createDeferredCore<"forced" | "uncertain">();
-  const joining = createDeferredCore();
+  const cleanup = retainedInspectionCleanup();
   const failure =
     outcome === "nested failure"
       ? new GatewayServiceUpdateOwnershipError(
@@ -77,10 +72,7 @@ function pendingCleanup(outcome: Outcome) {
       if (outcome === "nested failure") {
         throw failure;
       }
-      retainCommandProcessCleanup(cleanup.promise);
-      resolveCommandProcessSignal()?.addEventListener("abort", () => joining.resolve(), {
-        once: true,
-      });
+      cleanup.retain();
       return value;
     },
     async settle(inspection: Promise<unknown>, beforeRelease = () => {}) {
@@ -89,19 +81,7 @@ function pendingCleanup(outcome: Outcome) {
         return failure;
       }
       const work = inspection.catch((error: unknown) => error);
-      try {
-        await Promise.race([
-          joining.promise,
-          work.then(() => {
-            throw new Error("inspection escaped cleanup ownership");
-          }),
-        ]);
-        beforeRelease();
-      } finally {
-        cleanup.resolve(outcome === "revoked" ? "forced" : outcome);
-        await work;
-      }
-      return await work;
+      return await cleanup.join(work, outcome === "revoked" ? "forced" : outcome, beforeRelease);
     },
   };
 }
