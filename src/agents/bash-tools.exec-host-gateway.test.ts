@@ -85,25 +85,23 @@ function exactCommandMarker(command: string): string {
   return `=command:${crypto.createHash("sha256").update(command.trim()).digest("hex").slice(0, 16)}`;
 }
 
-const buildExecApprovalPendingToolResultMock = vi.hoisted(() => vi.fn());
-const evaluateShellAllowlistWithAuthorizationMock = vi.hoisted(() =>
-  vi.fn<() => MockAllowlistResult>(),
-);
-const hasDurableExecApprovalMock = vi.hoisted(() => vi.fn(() => true));
-const hasExactCommandDurableExecApprovalMock = vi.hoisted(() => vi.fn(() => false));
-const requiresExecApprovalMock = vi.hoisted(() => vi.fn(() => false));
-const buildEnforcedShellCommandMock = vi.hoisted(() =>
-  vi.fn<() => { ok: boolean; reason?: string; command?: string }>(),
-);
-const defaultExecAutoReviewerMock = vi.hoisted(() => vi.fn<ExecAutoReviewer>());
-const commitExecAuthorizationMock = vi.hoisted(() =>
-  vi.fn<typeof import("../infra/exec-approvals.js").commitExecAuthorizationLocked>(
-    async () => () => {},
-  ),
-);
-const approvalDecisionMock = vi.hoisted(() =>
-  vi.fn<() => Promise<string | null | undefined>>(async () => undefined),
-);
+const mock = vi.hoisted(() => ({
+  pending: vi.fn(),
+  allowlist: vi.fn<() => MockAllowlistResult>(),
+  durable: vi.fn(() => true),
+  exact: vi.fn(() => false),
+  requires: vi.fn(() => false),
+  enforced: vi.fn<() => { ok: boolean; reason?: string; command?: string }>(),
+  review: vi.fn<ExecAutoReviewer>(),
+  commit: vi.fn<typeof import("../infra/exec-approvals.js").commitExecAuthorizationLocked>(),
+  decision: vi.fn<() => Promise<string | null | undefined>>(),
+  policy: vi.fn<() => MockExecHostApprovalContext>(),
+  run: vi.fn(),
+  background: vi.fn(),
+  followup: vi.fn<SendExecApprovalFollowupResult>(),
+  route: vi.fn<typeof import("./bash-tools.exec-host-shared.js").createExecApprovalRequestRoute>(),
+  inline: vi.fn<() => typeof INLINE_EVAL_HIT | null>(),
+}));
 const runAbortedApprovalError = vi.hoisted(() => new Error("run aborted"));
 const approvalRouteFixture = vi.hoisted(() => ({ inline: false, id: "" }));
 const callGatewayToolMock = vi.hoisted(() =>
@@ -116,7 +114,7 @@ const callGatewayToolMock = vi.hoisted(() =>
       throw new Error(`Unexpected gateway method: ${method}`);
     }
     try {
-      const decision = await approvalDecisionMock();
+      const decision = await mock.decision();
       if (decision === undefined) {
         throw new Error("approval request failed");
       }
@@ -129,10 +127,6 @@ const callGatewayToolMock = vi.hoisted(() =>
     }
   }),
 );
-const resolveExecHostApprovalContextMock = vi.hoisted(() =>
-  vi.fn<() => MockExecHostApprovalContext>(),
-);
-const runExecProcessMock = vi.hoisted(() => vi.fn());
 const startupCancellationMocks = vi.hoisted(() => ({
   spawn: vi.fn<ProcessSupervisor["spawn"]>(),
   prepare: vi.fn<() => void>(),
@@ -149,32 +143,21 @@ vi.mock("./shell-snapshot.js", () => ({
   },
 }));
 
-const markBackgroundedMock = vi.hoisted(() => vi.fn());
-const sendExecApprovalFollowupResultMock = vi.hoisted(() =>
-  vi.fn<SendExecApprovalFollowupResult>(async () => undefined),
-);
-const createExecApprovalRequestRouteMock = vi.hoisted(() =>
-  vi.fn<typeof import("./bash-tools.exec-host-shared.js").createExecApprovalRequestRoute>(),
-);
-const detectInterpreterInlineEvalArgvMock = vi.hoisted(() =>
-  vi.fn<() => typeof INLINE_EVAL_HIT | null>(),
-);
-
 vi.mock("../infra/exec-approvals.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/exec-approvals.js")>()),
-  evaluateShellAllowlistWithAuthorization: evaluateShellAllowlistWithAuthorizationMock,
-  hasDurableExecApproval: hasDurableExecApprovalMock,
-  hasExactCommandDurableExecApproval: hasExactCommandDurableExecApprovalMock,
-  buildEnforcedShellCommand: buildEnforcedShellCommandMock,
-  requiresExecApproval: requiresExecApprovalMock,
-  commitExecAuthorizationLocked: commitExecAuthorizationMock,
+  evaluateShellAllowlistWithAuthorization: mock.allowlist,
+  hasDurableExecApproval: mock.durable,
+  hasExactCommandDurableExecApproval: mock.exact,
+  buildEnforcedShellCommand: mock.enforced,
+  requiresExecApproval: mock.requires,
+  commitExecAuthorizationLocked: mock.commit,
   resolveApprovalAuditTrustPath: vi.fn(() => null),
   resolveAllowAlwaysPatterns: vi.fn(() => []),
 }));
 
 vi.mock("../infra/exec-auto-review.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/exec-auto-review.js")>()),
-  defaultExecAutoReviewer: defaultExecAutoReviewerMock,
+  defaultExecAutoReviewer: mock.review,
 }));
 
 vi.mock("./tools/gateway.js", () => ({
@@ -184,40 +167,40 @@ vi.mock("./tools/gateway.js", () => ({
 
 vi.mock("./bash-tools.exec-host-shared.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./bash-tools.exec-host-shared.js")>();
-  createExecApprovalRequestRouteMock.mockImplementation(actual.createExecApprovalRequestRoute);
+  mock.route.mockImplementation(actual.createExecApprovalRequestRoute);
   return {
     ...actual,
-    resolveExecHostApprovalContext: resolveExecHostApprovalContextMock,
-    buildExecApprovalPendingToolResult: buildExecApprovalPendingToolResultMock,
-    createExecApprovalRequestRoute: createExecApprovalRequestRouteMock,
-    sendExecApprovalFollowupResult: sendExecApprovalFollowupResultMock,
+    resolveExecHostApprovalContext: mock.policy,
+    buildExecApprovalPendingToolResult: mock.pending,
+    createExecApprovalRequestRoute: mock.route,
+    sendExecApprovalFollowupResult: mock.followup,
   };
 });
 
 vi.mock("./bash-tools.exec-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./bash-tools.exec-runtime.js")>()),
   createApprovalSlug: vi.fn(() => "slug"),
-  runExecProcess: runExecProcessMock,
+  runExecProcess: mock.run,
 }));
 
 vi.mock("./bash-process-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./bash-process-registry.js")>()),
   getActiveBackgroundExecSessionCount: vi.fn(() => 0),
-  markBackgrounded: markBackgroundedMock,
+  markBackgrounded: mock.background,
   tail: vi.fn((value) => value),
 }));
 
 vi.mock("../infra/command-analysis/inline-eval.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/command-analysis/inline-eval.js")>()),
   describeInterpreterInlineEval: vi.fn(() => "python -c"),
-  detectInterpreterInlineEvalArgv: detectInterpreterInlineEvalArgvMock,
+  detectInterpreterInlineEvalArgv: mock.inline,
 }));
 
 let processGatewayAllowlist: typeof import("./bash-tools.exec-host-gateway.js").processGatewayAllowlist;
 type GatewayAllowlistParams = Parameters<typeof processGatewayAllowlist>[0];
 
 function requireSentFollowupText(callIndex = 0): string {
-  return sendExecApprovalFollowupResultMock.mock.calls[callIndex]?.[1] ?? "";
+  return mock.followup.mock.calls[callIndex]?.[1] ?? "";
 }
 
 function captureProcessUnhandledRejections() {
@@ -254,51 +237,42 @@ describe("processGatewayAllowlist", () => {
   beforeEach(() => {
     resetGatewayWorkAdmission();
     resetDiagnosticEventsForTest();
-    buildExecApprovalPendingToolResultMock.mockReset();
-    evaluateShellAllowlistWithAuthorizationMock.mockReset();
+    for (const [name, fixture] of Object.entries(mock)) {
+      if (name !== "route") {
+        fixture.mockReset();
+      }
+    }
     mockAllowlist({
       allowlistSatisfied: true,
       segments: [{ resolution: null, argv: ["echo", "ok"] }],
       segmentAllowlistEntries: [{ pattern: "/usr/bin/echo", source: "allow-always" }],
       segmentSatisfiedBy: [],
     });
-    hasDurableExecApprovalMock.mockReset();
-    hasDurableExecApprovalMock.mockReturnValue(true);
-    hasExactCommandDurableExecApprovalMock.mockReset();
-    hasExactCommandDurableExecApprovalMock.mockReturnValue(false);
-    requiresExecApprovalMock.mockReset();
-    requiresExecApprovalMock.mockReturnValue(false);
-    buildEnforcedShellCommandMock.mockReset();
-    buildEnforcedShellCommandMock.mockReturnValue({
+    mock.durable.mockReturnValue(true);
+    mock.exact.mockReturnValue(false);
+    mock.requires.mockReturnValue(false);
+    mock.enforced.mockReturnValue({
       ok: false,
       reason: "segment execution plan unavailable",
     });
-    defaultExecAutoReviewerMock.mockReset();
-    defaultExecAutoReviewerMock.mockResolvedValue({
+    mock.review.mockResolvedValue({
       decision: "allow-once",
       risk: "low",
       rationale: "allowed",
     });
-    commitExecAuthorizationMock.mockReset();
-    approvalDecisionMock.mockReset();
-    approvalDecisionMock.mockResolvedValue(undefined);
+    mock.decision.mockResolvedValue(undefined);
     approvalRouteFixture.inline = false;
     callGatewayToolMock.mockClear();
     approvalRouteFixture.id = "";
-    resolveExecHostApprovalContextMock.mockReset();
     mockHostPolicy();
-    runExecProcessMock.mockReset();
     startupCancellationMocks.spawn.mockReset();
     startupCancellationMocks.prepare.mockReset();
-    markBackgroundedMock.mockReset();
-    sendExecApprovalFollowupResultMock.mockReset();
-    detectInterpreterInlineEvalArgvMock.mockReset();
-    detectInterpreterInlineEvalArgvMock.mockReturnValue(null);
-    buildExecApprovalPendingToolResultMock.mockReturnValue({
+    mock.inline.mockReturnValue(null);
+    mock.pending.mockReturnValue({
       details: { status: "approval-pending" },
       content: [],
     });
-    createExecApprovalRequestRouteMock.mockClear();
+    mock.route.mockClear();
   });
 
   afterEach(() => {
@@ -307,7 +281,7 @@ describe("processGatewayAllowlist", () => {
   });
 
   function mockHostPolicy(overrides: Partial<MockExecHostApprovalContext> = {}) {
-    resolveExecHostApprovalContextMock.mockReturnValue({
+    mock.policy.mockReturnValue({
       approvals: { allowlist: [], file: { version: 1, agents: {} } },
       hostSecurity: "allowlist",
       hostAsk: "off",
@@ -316,8 +290,14 @@ describe("processGatewayAllowlist", () => {
     });
   }
 
+  function expectAuthorization(authorization: Record<string, unknown>) {
+    expect(mock.commit).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: expect.objectContaining(authorization) }),
+    );
+  }
+
   function mockAllowlist(overrides: Partial<MockAllowlistResult> = {}) {
-    evaluateShellAllowlistWithAuthorizationMock.mockReturnValue({
+    mock.allowlist.mockReturnValue({
       allowlistMatches: [],
       analysisOk: true,
       allowlistSatisfied: false,
@@ -353,23 +333,23 @@ describe("processGatewayAllowlist", () => {
     outcome: ExecApprovalFollowupOutcome;
     sessionId?: string;
   }) {
-    approvalDecisionMock.mockResolvedValueOnce("allow-once");
-    runExecProcessMock.mockResolvedValue({
+    mock.decision.mockResolvedValueOnce("allow-once");
+    mock.run.mockResolvedValue({
       session: { id: params.sessionId ?? "sess-1" },
       promise: Promise.resolve(params.outcome),
     });
   }
 
   function mockCompletedProcess(aggregated = "done", sessionId = "sess-1") {
-    runExecProcessMock.mockResolvedValue({
+    mock.run.mockResolvedValue({
       session: { id: sessionId },
       promise: Promise.resolve({ status: "completed", exitCode: 0, timedOut: false, aggregated }),
     });
   }
 
   function mockExactTrust(command: string, entries: ExecAllowlistEntry[] = []) {
-    hasDurableExecApprovalMock.mockReturnValue(true);
-    hasExactCommandDurableExecApprovalMock.mockReturnValue(true);
+    mock.durable.mockReturnValue(true);
+    mock.exact.mockReturnValue(true);
     mockHostPolicy({
       approvals: {
         allowlist: [...entries, { pattern: exactCommandMarker(command), source: "allow-always" }],
@@ -406,20 +386,26 @@ describe("processGatewayAllowlist", () => {
   }
 
   async function mockAllowlistTimeoutFallback(hostSecurity: ExecSecurity) {
+    const { command, enforcedCommand } = await configureAllowlistedNodeVersion();
+    mock.requires.mockReturnValue(true);
+    mockHostPolicy({ hostSecurity, hostAsk: "always", askFallback: "allowlist" });
+    return { command, enforcedCommand };
+  }
+
+  async function configureAllowlistedNodeVersion(entry?: ExecAllowlistEntry) {
     const { command, authorizationPlan, segments, enforcedCommand } =
       await planAllowlistedNodeVersion();
     const policyPath = resolvePolicyTargetCandidatePath(segments[0]?.resolution ?? null) ?? "node";
-    requiresExecApprovalMock.mockReturnValue(true);
-    buildEnforcedShellCommandMock.mockReturnValue({ ok: true, command: enforcedCommand });
+    const allowlistEntry = entry ?? { pattern: policyPath };
+    mock.enforced.mockReturnValue({ ok: true, command: enforcedCommand });
     mockAllowlist({
-      allowlistMatches: [{ pattern: policyPath }],
+      allowlistMatches: [{ pattern: allowlistEntry.pattern }],
       allowlistSatisfied: true,
       segments,
-      segmentAllowlistEntries: [{ pattern: policyPath }],
+      segmentAllowlistEntries: [allowlistEntry],
       segmentSatisfiedBy: ["allowlist"],
       authorizationPlan,
     });
-    mockHostPolicy({ hostSecurity, hostAsk: "always", askFallback: "allowlist" });
     return { command, enforcedCommand };
   }
 
@@ -442,7 +428,7 @@ describe("processGatewayAllowlist", () => {
     const segments = authorizationPlan.groups.flatMap((group) =>
       group.candidates.map((entry) => entry.sourceSegment),
     );
-    requiresExecApprovalMock.mockReturnValue(params.requiresApproval ?? true);
+    mock.requires.mockReturnValue(params.requiresApproval ?? true);
     mockAllowlist({
       allowlistSatisfied: params.allowlistSatisfied ?? false,
       allowlistMatches: params.allowlistMatches ?? [],
@@ -467,20 +453,15 @@ describe("processGatewayAllowlist", () => {
 
   it("denies shell-expansion plan misses immediately when asking is off and fallback denies", async () => {
     const command = "grep -il needle -r /tmp --include=*.md";
-    const authorizationPlan = await requireAuthorizationPlan({
+    await configurePlanBackedCommand({
       command,
       env: { PATH: "/usr/bin:/bin" },
-    });
-    const segments = authorizationPlan.groups.flatMap((group) =>
-      group.candidates.map((candidate) => candidate.sourceSegment),
-    );
-    mockAllowlist({
       allowlistMatches: [{ pattern: "/usr/bin/grep" }],
       allowlistSatisfied: true,
-      segments,
       segmentAllowlistEntries: [{ pattern: "/usr/bin/grep" }],
       segmentSatisfiedBy: ["allowlist"],
-      authorizationPlan,
+      requiresApproval: false,
+      hostAsk: "off",
     });
     const captured = captureSecurityEvents();
 
@@ -491,7 +472,7 @@ describe("processGatewayAllowlist", () => {
       captured.stop();
     }
 
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+    expect(mock.route).not.toHaveBeenCalled();
     expect(result!.deniedResult?.content[0]).toMatchObject({
       text: expect.stringContaining("ask-fallback-deny: execution-plan-miss"),
     });
@@ -506,17 +487,10 @@ describe("processGatewayAllowlist", () => {
   it.runIf(process.platform !== "win32")(
     "rejects a durable grant when its approved directory is replaced before execution",
     async () => {
-      const { command, authorizationPlan, segments, enforcedCommand } =
-        await planAllowlistedNodeVersion();
-      mockAllowlist({
-        allowlistMatches: [{ pattern: "/usr/bin/node" }],
-        allowlistSatisfied: true,
-        segments,
-        segmentAllowlistEntries: [{ pattern: "/usr/bin/node", source: "allow-always" }],
-        segmentSatisfiedBy: ["allowlist"],
-        authorizationPlan,
+      const { command } = await configureAllowlistedNodeVersion({
+        pattern: "/usr/bin/node",
+        source: "allow-always",
       });
-      buildEnforcedShellCommandMock.mockReturnValue({ ok: true, command: enforcedCommand });
       const approvedCwd = fs.realpathSync(
         fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-cwd-approved-")),
       );
@@ -572,7 +546,7 @@ describe("processGatewayAllowlist", () => {
     async () => {
       const command = "ls *.ts; echo complete";
       await configurePlanBackedCommand({ command });
-      defaultExecAutoReviewerMock.mockResolvedValue({
+      mock.review.mockResolvedValue({
         decision: "allow-once",
         risk: "medium",
         rationale: "project inspection",
@@ -580,7 +554,7 @@ describe("processGatewayAllowlist", () => {
       const warnings: string[] = [];
       const result = await runGatewayAllowlist({ command, autoReview: true, warnings });
 
-      expect(defaultExecAutoReviewerMock).toHaveBeenCalledWith(
+      expect(mock.review).toHaveBeenCalledWith(
         expect.objectContaining({
           command,
           reason: "execution-plan-miss",
@@ -594,12 +568,8 @@ describe("processGatewayAllowlist", () => {
       );
       expect(result.allowWithoutEnforcedCommand).toBeUndefined();
       await expect(result.revalidateBeforeExecution?.()).resolves.toBeUndefined();
-      expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
-      expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "auto-review" }),
-        }),
-      );
+      expect(mock.route).not.toHaveBeenCalled();
+      expectAuthorization({ source: "auto-review" });
       expect(warnings).toContain("Exec auto-review allowed once (risk=medium): project inspection");
     },
   );
@@ -607,7 +577,7 @@ describe("processGatewayAllowlist", () => {
   it("escalates the third session denial and resets after reviewer allowance or human resolution", async () => {
     const command = "echo review";
     await configurePlanBackedCommand({ command });
-    defaultExecAutoReviewerMock.mockResolvedValue({
+    mock.review.mockResolvedValue({
       decision: "deny",
       risk: "medium",
       rationale: "narrow it",
@@ -621,7 +591,7 @@ describe("processGatewayAllowlist", () => {
     expect((await run()).deniedResult?.details).toMatchObject({
       failureKind: "auto-review-denied",
     });
-    defaultExecAutoReviewerMock.mockResolvedValueOnce({
+    mock.review.mockResolvedValueOnce({
       decision: "allow-once",
       risk: "medium",
       rationale: "safe now",
@@ -633,12 +603,12 @@ describe("processGatewayAllowlist", () => {
     expect((await run()).deniedResult?.details).toMatchObject({
       failureKind: "auto-review-denied",
     });
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+    expect(mock.route).not.toHaveBeenCalled();
     // Human denial resolves the escalation and starts a new denial sequence.
-    approvalDecisionMock.mockResolvedValueOnce("deny");
+    mock.decision.mockResolvedValueOnce("deny");
     const warnings: string[] = [];
     await run(warnings);
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(1);
+    expect(mock.route).toHaveBeenCalledTimes(1);
     expect(warnings).toContain(
       "Exec auto-review denied 3 consecutive commands for this session; escalating to human approval",
     );
@@ -648,7 +618,7 @@ describe("processGatewayAllowlist", () => {
     expect((await run()).deniedResult?.details).toMatchObject({
       failureKind: "auto-review-denied",
     });
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(1);
+    expect(mock.route).toHaveBeenCalledTimes(1);
     const otherSession = await runGatewayAllowlist({
       command,
       autoReview: true,
@@ -656,13 +626,13 @@ describe("processGatewayAllowlist", () => {
     });
     expect(otherSession.deniedResult?.details).toMatchObject({ failureKind: "auto-review-denied" });
     await run();
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(2);
+    expect(mock.route).toHaveBeenCalledTimes(2);
   });
 
   it("returns approval-required when non-interactive auto-review asks for a human", async () => {
     const command = "echo review";
     await configurePlanBackedCommand({ command });
-    defaultExecAutoReviewerMock.mockResolvedValue({
+    mock.review.mockResolvedValue({
       decision: "ask",
       risk: "low",
       rationale: "reviewed",
@@ -672,21 +642,21 @@ describe("processGatewayAllowlist", () => {
       autoReview: true,
       nonInteractiveApproval: true,
     });
-    expect(defaultExecAutoReviewerMock).toHaveBeenCalledOnce();
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+    expect(mock.review).toHaveBeenCalledOnce();
+    expect(mock.route).not.toHaveBeenCalled();
     expect(result.deniedResult?.details).toMatchObject({
       status: "failed",
       failureKind: "approval_required",
     });
-    expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
   });
 
   it("keeps always-ask commands on the human approval path", async () => {
     const command = "echo review";
     await configurePlanBackedCommand({ command, hostAsk: "always" });
     await runGatewayAllowlist({ command, autoReview: true });
-    expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledOnce();
+    expect(mock.review).not.toHaveBeenCalled();
+    expect(mock.route).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -758,7 +728,7 @@ describe("processGatewayAllowlist", () => {
         expect(onApprovalReview).toHaveBeenCalledWith(
           expect.objectContaining({ id: "guardian:tool-review", status }),
         );
-        expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+        expect(mock.route).not.toHaveBeenCalled();
         expect(result.deniedResult).toBeUndefined();
       } finally {
         unsubscribe();
@@ -773,9 +743,9 @@ describe("processGatewayAllowlist", () => {
       await configurePlanBackedCommand({ command });
       const warnings: string[] = [];
       await runGatewayAllowlist({ command, ask: "on-miss", autoReview: true, warnings });
-      expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
-      expect(createExecApprovalRequestRouteMock).toHaveBeenCalledOnce();
-      expect(createExecApprovalRequestRouteMock).toHaveBeenCalledWith(
+      expect(mock.review).not.toHaveBeenCalled();
+      expect(mock.route).toHaveBeenCalledOnce();
+      expect(mock.route).toHaveBeenCalledWith(
         expect.objectContaining({ requiresAutoReviewHumanApproval: true }),
       );
       expect(warnings).toContain(
@@ -822,13 +792,13 @@ describe("processGatewayAllowlist", () => {
       unsubscribe();
     }
     expect(reviewStatuses).toEqual(["in_progress", "aborted"]);
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+    expect(mock.route).not.toHaveBeenCalled();
   });
 
   it("rejects contradictory high-risk custom reviewer approvals", async () => {
     const command = "echo ok";
     await configurePlanBackedCommand({ command });
-    defaultExecAutoReviewerMock.mockResolvedValueOnce({
+    mock.review.mockResolvedValueOnce({
       decision: "allow-once",
       risk: "high",
       rationale: "contradictory custom decision",
@@ -836,7 +806,7 @@ describe("processGatewayAllowlist", () => {
 
     const result = await runGatewayAllowlist({ command, ask: "on-miss", autoReview: true });
 
-    expect(createExecApprovalRequestRouteMock).toHaveBeenCalledTimes(1);
+    expect(mock.route).toHaveBeenCalledTimes(1);
     expect(result.deniedResult?.details.status).toBe("failed");
   });
 
@@ -848,7 +818,7 @@ describe("processGatewayAllowlist", () => {
       requiresApproval: false,
       satisfiedBy: "allowlist",
     });
-    detectInterpreterInlineEvalArgvMock.mockReturnValue(INLINE_EVAL_HIT);
+    mock.inline.mockReturnValue(INLINE_EVAL_HIT);
     const warnings: string[] = [];
 
     const result = await runGatewayAllowlist({
@@ -859,7 +829,7 @@ describe("processGatewayAllowlist", () => {
       warnings,
     });
 
-    expect(defaultExecAutoReviewerMock).toHaveBeenCalledWith(
+    expect(mock.review).toHaveBeenCalledWith(
       expect.objectContaining({
         command,
         argv: ["python3", "-c", "print(1)"],
@@ -870,7 +840,7 @@ describe("processGatewayAllowlist", () => {
         }),
       }),
     );
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+    expect(mock.route).not.toHaveBeenCalled();
     expect(warnings[0]).toContain("reviewer or explicit approval");
     expect(result.execCommandOverride).toBe(`'${invocationPath}' -c 'print(1)'`);
   });
@@ -898,21 +868,17 @@ describe("processGatewayAllowlist", () => {
 
     const result = await runGatewayAllowlist({ command });
 
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+    expect(mock.route).not.toHaveBeenCalled();
     expect(result).toEqual({
       execCommandOverride: enforced.command,
       assertCurrent: expect.any(Function),
       revalidateBeforeExecution: expect.any(Function),
     });
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          requireExactCommandApproval: false,
-          requireDurableAllowlistApproval: false,
-        }),
-      }),
-    );
+    expectAuthorization({
+      source: "current-policy",
+      requireExactCommandApproval: false,
+      requireDurableAllowlistApproval: false,
+    });
   });
 
   it("omits allow-always when allowlist execution cannot persist reusable patterns", async () => {
@@ -925,7 +891,7 @@ describe("processGatewayAllowlist", () => {
       segmentAllowlistEntries: [{ pattern: "/usr/bin/ls", source: "allow-always" }],
       satisfiedBy: "allowlist",
     });
-    hasDurableExecApprovalMock.mockReturnValue(false);
+    mock.durable.mockReturnValue(false);
 
     const result = await runGatewayAllowlist({
       approvalFollowupMode: "agent",
@@ -935,7 +901,7 @@ describe("processGatewayAllowlist", () => {
     });
 
     expect(result.pendingResult?.details.status).toBe("approval-pending");
-    expect(buildExecApprovalPendingToolResultMock).toHaveBeenCalledWith(
+    expect(mock.pending).toHaveBeenCalledWith(
       expect.objectContaining({
         allowedDecisions: ["allow-once", "deny"],
       }),
@@ -958,7 +924,7 @@ describe("processGatewayAllowlist", () => {
       satisfiedBy: "allowlist",
     });
     mockExactTrust(command, [allowlistEntry]);
-    commitExecAuthorizationMock.mockRejectedValueOnce(new Error("exact-command approval revoked"));
+    mock.commit.mockRejectedValueOnce(new Error("exact-command approval revoked"));
 
     await expect(
       runGatewayAllowlist({
@@ -968,16 +934,12 @@ describe("processGatewayAllowlist", () => {
       }),
     ).rejects.toThrow("exact-command approval revoked");
 
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          requireExactCommandApproval: true,
-          requireDurableAllowlistApproval: false,
-        }),
-      }),
-    );
+    expect(mock.route).not.toHaveBeenCalled();
+    expectAuthorization({
+      source: "current-policy",
+      requireExactCommandApproval: true,
+      requireDurableAllowlistApproval: false,
+    });
   });
 
   it("offers allow-always for shell-wrapper misses with reusable executable patterns", async () => {
@@ -996,7 +958,7 @@ describe("processGatewayAllowlist", () => {
     ];
     await configurePlanBackedCommand({ command, env });
     const approval = createDeferredCore<"allow-always">();
-    approvalDecisionMock.mockReturnValue(approval.promise);
+    mock.decision.mockReturnValue(approval.promise);
     mockCompletedProcess();
 
     const result = await runGatewayAllowlist({
@@ -1013,18 +975,16 @@ describe("processGatewayAllowlist", () => {
     );
 
     expect(result.pendingResult?.details.status).toBe("approval-pending");
-    expect(buildExecApprovalPendingToolResultMock).toHaveBeenCalledWith(
+    expect(mock.pending).toHaveBeenCalledWith(
       expect.objectContaining({
         allowedDecisions: ["allow-once", "allow-always", "deny"],
       }),
     );
-    expect(runExecProcessMock).not.toHaveBeenCalled();
+    expect(mock.run).not.toHaveBeenCalled();
     approval.resolve("allow-always");
-    await vi.waitFor(() => expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce());
-    expect(runExecProcessMock).toHaveBeenCalledWith(
-      expect.objectContaining({ env, secretEgressBindings }),
-    );
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(mock.followup).toHaveBeenCalledOnce());
+    expect(mock.run).toHaveBeenCalledWith(expect.objectContaining({ env, secretEgressBindings }));
+    expect(mock.commit).toHaveBeenCalledWith(
       expect.objectContaining({
         authorization: expect.objectContaining({ source: "explicit-approval" }),
         allowAlwaysDecision: {
@@ -1044,8 +1004,8 @@ describe("processGatewayAllowlist", () => {
 
       const result = await runGatewayAllowlist({ command, ask: "on-miss", autoReview: true });
 
-      expect(defaultExecAutoReviewerMock).not.toHaveBeenCalled();
-      expect(createExecApprovalRequestRouteMock).toHaveBeenCalledOnce();
+      expect(mock.review).not.toHaveBeenCalled();
+      expect(mock.route).toHaveBeenCalledOnce();
       expect(result.deniedResult?.details.status).toBe("failed");
     },
   );
@@ -1054,12 +1014,12 @@ describe("processGatewayAllowlist", () => {
     const command = "echo ok";
     await configurePlanBackedCommand({ command });
     mockHostPolicy({ hostSecurity: "full", hostAsk: "on-miss", askFallback: "full" });
-    defaultExecAutoReviewerMock.mockResolvedValue({
+    mock.review.mockResolvedValue({
       decision: "ask",
       risk: "medium",
       rationale: "needs a person",
     });
-    approvalDecisionMock.mockResolvedValue(null);
+    mock.decision.mockResolvedValue(null);
     const result = await runGatewayAllowlist({
       command,
       security: "full",
@@ -1067,7 +1027,7 @@ describe("processGatewayAllowlist", () => {
       autoReview: true,
       turnSourceChannel: "webchat",
     });
-    expect(defaultExecAutoReviewerMock).toHaveBeenCalledOnce();
+    expect(mock.review).toHaveBeenCalledOnce();
     expect(result.deniedResult?.details.status).toBe("failed");
     expect(result.deniedResult?.content[0]).toMatchObject({
       text: `Exec denied (gateway id=${approvalRouteFixture.id}, approval-timeout): echo ok\nCommand did not run: approval timed out.`,
@@ -1081,9 +1041,9 @@ describe("processGatewayAllowlist", () => {
       segments: [{ resolution: null, argv: ["/bin/echo", "durable"] }],
       segmentSatisfiedBy: [],
     });
-    hasDurableExecApprovalMock.mockReturnValue(true);
-    hasExactCommandDurableExecApprovalMock.mockReturnValue(true);
-    buildEnforcedShellCommandMock.mockReturnValue({
+    mock.durable.mockReturnValue(true);
+    mock.exact.mockReturnValue(true);
+    mock.enforced.mockReturnValue({
       ok: true,
       command,
     });
@@ -1091,20 +1051,13 @@ describe("processGatewayAllowlist", () => {
 
     const result = await runGatewayAllowlist({ command });
 
-    expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+    expect(mock.route).not.toHaveBeenCalled();
     expect(result).toEqual({
       execCommandOverride: undefined,
       assertCurrent: expect.any(Function),
       revalidateBeforeExecution: expect.any(Function),
     });
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          requireExactCommandApproval: true,
-        }),
-      }),
-    );
+    expectAuthorization({ source: "current-policy", requireExactCommandApproval: true });
   });
 
   it("keeps denying allowlist misses when durable trust does not match", async () => {
@@ -1112,7 +1065,7 @@ describe("processGatewayAllowlist", () => {
       analysisOk: false,
       segments: [{ resolution: null, argv: ["node", "--version"] }],
     });
-    hasDurableExecApprovalMock.mockReturnValue(false);
+    mock.durable.mockReturnValue(false);
 
     await expect(
       runGatewayAllowlist({
@@ -1122,7 +1075,7 @@ describe("processGatewayAllowlist", () => {
   });
 
   it("keeps webchat diagnostics approvals as direct pasteable followups", async () => {
-    approvalDecisionMock.mockResolvedValue("allow-once");
+    mock.decision.mockResolvedValue("allow-once");
     const outcome = {
       status: "completed" as const,
       exitCode: 0,
@@ -1147,7 +1100,7 @@ describe("processGatewayAllowlist", () => {
         },
       }),
     };
-    runExecProcessMock.mockResolvedValue({
+    mock.run.mockResolvedValue({
       session: { id: "sess-1" },
       promise: Promise.resolve(outcome),
     });
@@ -1172,9 +1125,9 @@ describe("processGatewayAllowlist", () => {
     });
 
     expect(result.pendingResult?.details.status).toBe("approval-pending");
-    await vi.waitFor(() => expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mock.followup).toHaveBeenCalledOnce());
 
-    const followupTarget = sendExecApprovalFollowupResultMock.mock.calls[0]?.[0];
+    const followupTarget = mock.followup.mock.calls[0]?.[0];
     expect(followupTarget?.direct).toBe(true);
     const followupText = requireSentFollowupText();
     expect(followupText).toContain("Diagnostics export created.");
@@ -1201,7 +1154,7 @@ describe("processGatewayAllowlist", () => {
     };
     const approvalFollowup = vi.fn<ExecApprovalFollowupFactory>(() => undefined);
     mockApprovedDetachedExec({ outcome: completedOutcome });
-    sendExecApprovalFollowupResultMock.mockRejectedValueOnce(
+    mock.followup.mockRejectedValueOnce(
       new Error("synchronous runtime-handoff registration failure"),
     );
 
@@ -1219,7 +1172,7 @@ describe("processGatewayAllowlist", () => {
 
       expect(approvalFollowup.mock.calls[0]?.[0].outcome).toEqual(completedOutcome);
       expect(unhandledRejections.reasons).toEqual([]);
-      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce();
+      expect(mock.followup).toHaveBeenCalledOnce();
       expect(requireSentFollowupText()).toContain("completed output");
       expect(requireSentFollowupText()).not.toContain("Exec denied");
     } finally {
@@ -1229,8 +1182,8 @@ describe("processGatewayAllowlist", () => {
 
   it("consumes rejected detached request-failure and fallback follow-ups", async () => {
     const unhandledRejections = captureProcessUnhandledRejections();
-    approvalDecisionMock.mockRejectedValueOnce(new Error("approval request failed"));
-    sendExecApprovalFollowupResultMock.mockRejectedValue(new Error("denial follow-up failed"));
+    mock.decision.mockRejectedValueOnce(new Error("approval request failed"));
+    mock.followup.mockRejectedValue(new Error("denial follow-up failed"));
     try {
       const result = await runGatewayAllowlist({
         command: "side-effecting-command",
@@ -1238,21 +1191,21 @@ describe("processGatewayAllowlist", () => {
         turnSourceChannel: "webchat",
       });
       expect(result.pendingResult?.details.status).toBe("approval-pending");
-      await vi.waitFor(() => expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(mock.followup).toHaveBeenCalledTimes(2));
       await setImmediate();
       expect(unhandledRejections.reasons).toEqual([]);
       const denied = `Exec denied (gateway id=${approvalRouteFixture.id}, approval-request-failed): side-effecting-command`;
       expect(requireSentFollowupText()).toBe(denied);
       expect(requireSentFollowupText(1)).toBe(denied);
-      expect(runExecProcessMock).not.toHaveBeenCalled();
+      expect(mock.run).not.toHaveBeenCalled();
     } finally {
       unhandledRejections.restore();
     }
   });
 
   it("fails closed when a detached allow-always authorization commit fails", async () => {
-    approvalDecisionMock.mockResolvedValue("allow-always");
-    commitExecAuthorizationMock.mockRejectedValueOnce(new Error("approval lock unavailable"));
+    mock.decision.mockResolvedValue("allow-always");
+    mock.commit.mockRejectedValueOnce(new Error("approval lock unavailable"));
     const captured = captureSecurityEvents();
     try {
       const result = await runGatewayAllowlist({
@@ -1260,11 +1213,11 @@ describe("processGatewayAllowlist", () => {
         command: "echo approved",
       });
       expect(result.pendingResult?.details.status).toBe("approval-pending");
-      await vi.waitFor(() => expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(mock.followup).toHaveBeenCalledOnce());
       expect(requireSentFollowupText()).toContain("approval-state-write-failed");
-      expect(runExecProcessMock).not.toHaveBeenCalled();
-      expect(commitExecAuthorizationMock).toHaveBeenCalledOnce();
-      expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
+      expect(mock.run).not.toHaveBeenCalled();
+      expect(mock.commit).toHaveBeenCalledOnce();
+      expect(mock.commit).toHaveBeenCalledWith(
         expect.objectContaining({
           authorization: expect.objectContaining({ source: "explicit-approval" }),
           allowAlwaysDecision: expect.any(Object),
@@ -1281,7 +1234,7 @@ describe("processGatewayAllowlist", () => {
   });
 
   it("emits inline approval park and clear events for a denial", async () => {
-    approvalDecisionMock.mockResolvedValue("deny");
+    mock.decision.mockResolvedValue("deny");
     const events: Array<Record<string, unknown>> = [];
     const unsubscribe = onAgentEvent((event) => {
       if (event.runId === "run-inline" && event.stream === "lifecycle") {
@@ -1317,18 +1270,18 @@ describe("processGatewayAllowlist", () => {
     const outcome = createDeferredCore<ExecApprovalFollowupOutcome>();
     const spawnAllowed = createDeferredCore();
     const spawnStarted = createDeferredCore();
-    approvalDecisionMock.mockReturnValue(approval.promise);
-    commitExecAuthorizationMock.mockImplementation(async () => {
+    mock.decision.mockReturnValue(approval.promise);
+    mock.commit.mockImplementation(async () => {
       expect(getActiveGatewayRootWorkCount()).toBe(1);
       return () => {};
     });
-    runExecProcessMock.mockImplementation(async () => {
+    mock.run.mockImplementation(async () => {
       expect(getActiveGatewayRootWorkCount()).toBe(1);
       spawnStarted.resolve();
       await spawnAllowed.promise;
       return { session: { id: "sess-atomic" }, promise: outcome.promise };
     });
-    markBackgroundedMock.mockImplementation(() => {
+    mock.background.mockImplementation(() => {
       expect(getActiveGatewayRootWorkCount()).toBe(1);
     });
 
@@ -1339,7 +1292,7 @@ describe("processGatewayAllowlist", () => {
     });
     expect(result.pendingResult?.details.status).toBe("approval-pending");
     await vi.waitFor(() => {
-      expect(approvalDecisionMock).toHaveBeenCalledOnce();
+      expect(mock.decision).toHaveBeenCalledOnce();
     });
     expect(getActiveGatewayRootWorkCount()).toBe(0);
 
@@ -1348,20 +1301,20 @@ describe("processGatewayAllowlist", () => {
     approval.resolve("allow-once");
     await Promise.resolve();
     await Promise.resolve();
-    expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
-    expect(runExecProcessMock).not.toHaveBeenCalled();
-    expect(markBackgroundedMock).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.run).not.toHaveBeenCalled();
+    expect(mock.background).not.toHaveBeenCalled();
 
     suspension?.release();
     await spawnStarted.promise;
     expect(getActiveGatewayRootWorkCount()).toBe(1);
     spawnAllowed.resolve();
     await vi.waitFor(() => {
-      expect(markBackgroundedMock).toHaveBeenCalledOnce();
+      expect(mock.background).toHaveBeenCalledOnce();
       expect(getActiveGatewayRootWorkCount()).toBe(0);
     });
-    expect(commitExecAuthorizationMock).toHaveBeenCalledOnce();
-    expect(runExecProcessMock).toHaveBeenCalledOnce();
+    expect(mock.commit).toHaveBeenCalledOnce();
+    expect(mock.run).toHaveBeenCalledOnce();
 
     outcome.resolve({
       status: "completed",
@@ -1370,7 +1323,7 @@ describe("processGatewayAllowlist", () => {
       aggregated: "done",
     });
     await vi.waitFor(() => {
-      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce();
+      expect(mock.followup).toHaveBeenCalledOnce();
     });
   });
 
@@ -1385,7 +1338,7 @@ describe("processGatewayAllowlist", () => {
         segmentSatisfiedBy: [],
       });
       mockExactTrust(command);
-      approvalDecisionMock.mockImplementation(async () => {
+      mock.decision.mockImplementation(async () => {
         fs.writeFileSync(script, "#!/bin/sh\necho mutated\n");
         return "allow-once";
       });
@@ -1399,17 +1352,17 @@ describe("processGatewayAllowlist", () => {
       });
 
       expect(result.pendingResult?.details.status).toBe("approval-pending");
-      expect(buildExecApprovalPendingToolResultMock).toHaveBeenCalledWith(
+      expect(mock.pending).toHaveBeenCalledWith(
         expect.objectContaining({ allowedDecisions: ["allow-once", "deny"] }),
       );
       await vi.waitFor(() => {
-        expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce();
+        expect(mock.followup).toHaveBeenCalledOnce();
       });
       expect(requireSentFollowupText()).toContain(
         "approval script operand changed before execution",
       );
-      expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
-      expect(runExecProcessMock).not.toHaveBeenCalled();
+      expect(mock.commit).not.toHaveBeenCalled();
+      expect(mock.run).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(workdir, { recursive: true, force: true });
     }
@@ -1417,7 +1370,7 @@ describe("processGatewayAllowlist", () => {
 
   it("denies a detached approved process when restart drain wins admission", async () => {
     const approval = createDeferredCore<ExecApprovalDecision>();
-    approvalDecisionMock.mockReturnValue(approval.promise);
+    mock.decision.mockReturnValue(approval.promise);
 
     const result = await runGatewayAllowlist({
       command: "find . -maxdepth 1",
@@ -1426,21 +1379,21 @@ describe("processGatewayAllowlist", () => {
     });
     expect(result.pendingResult?.details.status).toBe("approval-pending");
     await vi.waitFor(() => {
-      expect(approvalDecisionMock).toHaveBeenCalledOnce();
+      expect(mock.decision).toHaveBeenCalledOnce();
     });
 
     markGatewayRestartDraining();
     approval.resolve("allow-once");
     await vi.waitFor(() => {
-      expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledWith(
+      expect(mock.followup).toHaveBeenCalledWith(
         expect.anything(),
         `Exec denied (gateway id=${approvalRouteFixture.id}, gateway-draining): find . -maxdepth 1`,
       );
     });
-    expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce();
-    expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
-    expect(runExecProcessMock).not.toHaveBeenCalled();
-    expect(markBackgroundedMock).not.toHaveBeenCalled();
+    expect(mock.followup).toHaveBeenCalledOnce();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.run).not.toHaveBeenCalled();
+    expect(mock.background).not.toHaveBeenCalled();
     expect(getActiveGatewayRootWorkCount()).toBe(0);
   });
 
@@ -1448,20 +1401,20 @@ describe("processGatewayAllowlist", () => {
     "resolves a rotated GitHub credential only after delayed approval",
     async () => {
       const followupDelivered = createDeferredCore();
-      sendExecApprovalFollowupResultMock.mockImplementation(async () => {
+      mock.followup.mockImplementation(async () => {
         followupDelivered.resolve();
       });
       const runtime = await vi.importActual<typeof import("./bash-tools.exec-runtime.js")>(
         "./bash-tools.exec-runtime.js",
       );
-      runExecProcessMock.mockImplementation(runtime.runExecProcess);
+      mock.run.mockImplementation(runtime.runExecProcess);
       const profileDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "delayed-github-")));
       const hostsPath = path.join(profileDir, "hosts.yml");
       fs.writeFileSync(hostsPath, "github.com:\n  oauth_token: synthetic-before-approval\n", {
         mode: 0o600,
       });
       let releaseApproval: () => void = () => {};
-      approvalDecisionMock.mockImplementationOnce(
+      mock.decision.mockImplementationOnce(
         () =>
           new Promise((resolve) => {
             releaseApproval = () => resolve("allow-once");
@@ -1494,21 +1447,17 @@ describe("processGatewayAllowlist", () => {
           githubProfileDir: profileDir,
         });
         expect(result.pendingResult?.details.status).toBe("approval-pending");
-        await vi.waitFor(() => expect(approvalDecisionMock).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(mock.decision).toHaveBeenCalledOnce());
         expect(startupCancellationMocks.spawn).not.toHaveBeenCalled();
         fs.writeFileSync(hostsPath, "github.com:\n  oauth_token: synthetic-after-approval\n");
         releaseApproval();
         await followupDelivered.promise;
-        expect(sendExecApprovalFollowupResultMock.mock.calls.length).toBe(1);
+        expect(mock.followup.mock.calls.length).toBe(1);
         expect(requireSentFollowupText()).toContain("selected-after-approval");
         expect(startupCancellationMocks.spawn).toHaveBeenCalledOnce();
         expect(env.GH_TOKEN).toBe("");
-        expect(JSON.stringify(createExecApprovalRequestRouteMock.mock.calls)).not.toContain(
-          "synthetic-after-approval",
-        );
-        expect(JSON.stringify(sendExecApprovalFollowupResultMock.mock.calls)).not.toContain(
-          "synthetic-after-approval",
-        );
+        expect(JSON.stringify(mock.route.mock.calls)).not.toContain("synthetic-after-approval");
+        expect(JSON.stringify(mock.followup.mock.calls)).not.toContain("synthetic-after-approval");
         expect(JSON.stringify(startupCancellationMocks.spawn.mock.calls)).not.toContain(
           "synthetic-after-approval",
         );
@@ -1529,7 +1478,7 @@ describe("processGatewayAllowlist", () => {
     const runtime = await vi.importActual<typeof import("./bash-tools.exec-runtime.js")>(
       "./bash-tools.exec-runtime.js",
     );
-    runExecProcessMock.mockImplementation(runtime.runExecProcess);
+    mock.run.mockImplementation(runtime.runExecProcess);
     startupCancellationMocks.prepare.mockImplementationOnce(() =>
       controller.abort(new Error("cancelled while preparing")),
     );
@@ -1546,12 +1495,12 @@ describe("processGatewayAllowlist", () => {
     await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
 
     expect(startupCancellationMocks.spawn.mock.calls.length).toBe(0);
-    expect(markBackgroundedMock).not.toHaveBeenCalled();
-    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+    expect(mock.background).not.toHaveBeenCalled();
+    expect(mock.followup).not.toHaveBeenCalled();
   });
 
   it("drops detached execution and follow-up when the owning run is aborted", async () => {
-    approvalDecisionMock.mockRejectedValue(runAbortedApprovalError);
+    mock.decision.mockRejectedValue(runAbortedApprovalError);
 
     const result = await runGatewayAllowlist({
       command: "find . -maxdepth 1",
@@ -1563,11 +1512,11 @@ describe("processGatewayAllowlist", () => {
 
     expect(result.pendingResult?.details.status).toBe("approval-pending");
     await vi.waitFor(() => {
-      expect(approvalDecisionMock).toHaveBeenCalledOnce();
+      expect(mock.decision).toHaveBeenCalledOnce();
     });
-    expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
-    expect(runExecProcessMock).not.toHaveBeenCalled();
-    expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
+    expect(mock.run).not.toHaveBeenCalled();
+    expect(mock.followup).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1579,7 +1528,7 @@ describe("processGatewayAllowlist", () => {
       const { command, enforcedCommand } = await mockAllowlistTimeoutFallback("full");
       approvalRouteFixture.inline = inline;
       if (!inline) {
-        approvalDecisionMock.mockResolvedValue(null);
+        mock.decision.mockResolvedValue(null);
       }
       const result = await runGatewayAllowlist({
         command,
@@ -1590,20 +1539,16 @@ describe("processGatewayAllowlist", () => {
       });
 
       expect(result.execCommandOverride).toBe(enforcedCommand);
-      expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({
-            source: "ask-fallback",
-            security: "allowlist",
-            allowlistSatisfied: true,
-          }),
-        }),
-      );
+      expectAuthorization({
+        source: "ask-fallback",
+        security: "allowlist",
+        allowlistSatisfied: true,
+      });
     },
   );
 
   it("denies allowlist timeout fallback without an enforceable plan", async () => {
-    requiresExecApprovalMock.mockReturnValue(true);
+    mock.requires.mockReturnValue(true);
     mockAllowlist({
       allowlistMatches: [{ pattern: "/usr/bin/rg" }],
       allowlistSatisfied: true,
@@ -1612,7 +1557,7 @@ describe("processGatewayAllowlist", () => {
       segmentSatisfiedBy: ["allowlist"],
     });
     mockHostPolicy({ hostSecurity: "full", hostAsk: "always", askFallback: "allowlist" });
-    approvalDecisionMock.mockResolvedValue(null);
+    mock.decision.mockResolvedValue(null);
 
     const result = await runGatewayAllowlist({
       command: "rg needle",
@@ -1624,7 +1569,7 @@ describe("processGatewayAllowlist", () => {
     expect(result.deniedResult?.content[0]).toMatchObject({
       text: expect.stringContaining("approval-timeout: execution-plan-miss"),
     });
-    expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
+    expect(mock.commit).not.toHaveBeenCalled();
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

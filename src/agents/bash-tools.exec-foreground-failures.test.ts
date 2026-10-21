@@ -1,7 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ProcessSupervisor } from "../process/supervisor/index.js";
 import type { RunExit, SpawnInput } from "../process/supervisor/types.js";
@@ -34,20 +33,14 @@ function requireTextContent(
   result: Awaited<ReturnType<ReturnType<typeof createExecTool>["execute"]>>,
 ) {
   const content = result.content[0];
-  expect(content?.type).toBe("text");
-  if (content?.type !== "text") {
-    throw new Error(`expected text content, got ${content?.type ?? "missing"}`);
-  }
+  assert(content?.type === "text", `expected text content, got ${content?.type ?? "missing"}`);
   return content.text;
 }
 
 function requireFailedDetails(
   details: Awaited<ReturnType<ReturnType<typeof createExecTool>["execute"]>>["details"],
 ) {
-  expect(details.status).toBe("failed");
-  if (details.status !== "failed") {
-    throw new Error(`expected failed details, got ${details.status}`);
-  }
+  assert(details.status === "failed", `expected failed details, got ${details.status}`);
   return details;
 }
 
@@ -233,28 +226,36 @@ describe("exec foreground failures", () => {
     expect(text).not.toContain("OPENCLAW_CHILD_OOM_SCORE_ADJ");
   });
 
-  it("returns a failed result for unavailable explicit host workdirs before launching", async () => {
-    const missingWorkdir = path.join(
-      os.tmpdir(),
-      `openclaw-missing-workdir-${process.pid}-${Date.now()}`,
-    );
-    fs.rmSync(missingWorkdir, { recursive: true, force: true });
-
-    const fileWorkdir = path.join(
-      os.tmpdir(),
-      `openclaw-file-workdir-${process.pid}-${Date.now()}`,
-    );
-    fs.writeFileSync(fileWorkdir, "not a directory");
-
-    try {
-      for (const workdir of [missingWorkdir, "   ", fileWorkdir]) {
-        await expectUnavailableWorkdir({ workdir });
+  it.each(["gateway", "sandbox"] as const)(
+    "returns a failed result for unavailable explicit %s workdirs before launching",
+    async (host) => {
+      const workspaceDir = tempDirs.make("openclaw-workdir-");
+      fs.writeFileSync(path.join(workspaceDir, "not-dir"), "not a directory");
+      const resolve = (name: string) =>
+        host === "sandbox" ? `/workspace/${name}` : path.join(workspaceDir, name);
+      const workdirs = [resolve("missing"), "   ", resolve("not-dir")];
+      if (host === "sandbox") {
+        workdirs.push(tempDirs.make("openclaw-outside-workdir-"));
+      }
+      for (const workdir of workdirs) {
+        await expectUnavailableWorkdir({
+          workdir,
+          toolDefaults:
+            host === "gateway"
+              ? undefined
+              : {
+                  host,
+                  sandbox: {
+                    containerName: "sandbox-workdir-test",
+                    workspaceDir,
+                    containerWorkdir: "/workspace",
+                  },
+                },
+        });
         supervisorMock.spawn.mockClear();
       }
-    } finally {
-      fs.rmSync(fileWorkdir, { force: true });
-    }
-  });
+    },
+  );
 
   it("returns a failed result when the current gateway cwd is unavailable", async () => {
     const cwdSpy = vi.spyOn(process, "cwd").mockImplementation(() => {
@@ -338,25 +339,5 @@ describe("exec foreground failures", () => {
     expect(validateWorkdir).toHaveBeenCalledOnce();
     expect(buildExecSpec).not.toHaveBeenCalled();
     expect(supervisorMock.spawn).not.toHaveBeenCalled();
-  });
-
-  it("returns a failed result for unavailable explicit sandbox workdirs before launching a command", async () => {
-    const workspaceDir = tempDirs.make("openclaw-sandbox-workdir-");
-    const outsideDir = tempDirs.make("openclaw-outside-workdir-");
-    fs.writeFileSync(path.join(workspaceDir, "not-dir"), "not a directory");
-    for (const workdir of ["/workspace/missing", "   ", "/workspace/not-dir", outsideDir]) {
-      await expectUnavailableWorkdir({
-        workdir,
-        toolDefaults: {
-          host: "sandbox",
-          sandbox: {
-            containerName: "sandbox-workdir-test",
-            workspaceDir,
-            containerWorkdir: "/workspace",
-          },
-        },
-      });
-      supervisorMock.spawn.mockClear();
-    }
   });
 });
