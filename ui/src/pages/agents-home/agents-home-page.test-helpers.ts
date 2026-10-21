@@ -8,7 +8,7 @@ import type {
   SessionsListResult,
 } from "../../api/types.ts";
 import { createAgentSelectionCapability } from "../../app/agent-selection.ts";
-import type { ApplicationContext } from "../../app/context.ts";
+import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import { i18n } from "../../i18n/index.ts";
 import { createAgentIdentityCapability } from "../../lib/agents/identity.ts";
 import { createAgentCapability } from "../../lib/agents/index.ts";
@@ -376,6 +376,8 @@ export function createPage(options: PageOptions = {}) {
     ensureConfigLoaded,
     agentSelection,
     gateway: source.gateway,
+    setPhase: (phase: ApplicationGatewaySnapshot["phase"]) =>
+      source.publish({ ...source.gateway.snapshot, phase }),
     setClawsEnabled: (enabled: boolean) => {
       clawsEnabled = enabled;
       runtimeConfig.state.configSnapshot.sourceConfig.gateway.controlUi.experimental.claws =

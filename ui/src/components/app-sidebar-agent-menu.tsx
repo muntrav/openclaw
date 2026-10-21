@@ -23,7 +23,7 @@ type SidebarAgentMenuParams = Omit<
   SidebarAgentMenuSwitcherParams,
   "allAgentsScope" | "onAgentSettings"
 > & {
-  position: { x: number; top: number };
+  position: { x: number; top: number; placement?: "right-start" };
   anchor?: HTMLElement;
   tabFocusTarget?: (backward: boolean) => HTMLElement | undefined;
   basePath: string;
