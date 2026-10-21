@@ -158,3 +158,71 @@ it("delays the first Context arrival, preserves its deadline and disclosure, and
   });
   expect(view.group("context")?.textContent).toContain("3%");
 });
+
+it("keeps an empty Environment absent while its owner reads, and admits each real content source", () => {
+  const view = mountDetails();
+  expect(view.group("environment")).toBeNull();
+  const release = vi.fn();
+  const request = vi.fn(() => release);
+  const environment = { onRequestUncommitted: request };
+  view.update({
+    environment,
+    desktopDisclosures: { expanded: { environment: false }, onExpandedChange() {} },
+  });
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(view.group("environment")).toBeNull();
+
+  view.update({
+    environment: {
+      ...environment,
+      uncommitted: {
+        sessionKey: view.initial.sessionKey,
+        baseRef: "HEAD",
+        branch: "feature/arrival",
+        files: [{ path: "example.ts", status: "modified", additions: 3, deletions: 1 }],
+        additions: 3,
+        deletions: 1,
+      },
+    },
+  });
+  expect(view.group("environment")?.textContent).toContain("Changes");
+  expect(view.group("environment")?.querySelector("summary")?.getAttribute("aria-expanded")).toBe(
+    "false",
+  );
+  expect(release).toHaveBeenCalledTimes(1);
+
+  view.update({ environment });
+  expect(view.group("environment")).toBeNull();
+  expect(request).toHaveBeenCalledTimes(2);
+  view.update({ detailsWorkspace: { root: null, label: null, branch: "feature/arrival" } });
+  expect(view.group("environment")?.textContent).toContain("feature/arrival");
+  view.update({
+    detailsWorkspace: undefined,
+    selectedSession: {
+      ...view.initial.selectedSession!,
+      worktree: { id: "arrival-tree", repoRoot: "/workspace/example" },
+    },
+  });
+  expect(view.group("environment")?.textContent).toContain("Worktree");
+  view.update({ selectedSession: view.initial.selectedSession });
+  expect(view.group("environment")).toBeNull();
+  view.update({
+    selectedSession: {
+      ...view.initial.selectedSession!,
+      placement: {
+        state: "active",
+        generation: 1,
+        createdAtMs: 1,
+        updatedAtMs: 2,
+        stateChangedAtMs: 2,
+        environmentId: "worker:device",
+        activeOwnerEpoch: 1,
+        workerBundleHash: "a".repeat(64),
+        workspaceBaseManifestRef: "base-manifest",
+        remoteWorkspaceDir: "/worker/repo",
+        runner: { kind: "device", status: "available" },
+      },
+    },
+  });
+  expect(view.group("environment")?.textContent).toContain("worker:device");
+});

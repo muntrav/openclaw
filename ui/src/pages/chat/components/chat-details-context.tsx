@@ -14,11 +14,13 @@ import { registerChatComposerEnglish } from "../../../i18n/locales/en-chat-compo
 import { registerChatSessionEnglish } from "../../../i18n/locales/en-chat-session.ts";
 import { formatCompactTokenCount } from "../../../lib/format.ts";
 import { registerEnglishCatalog, t } from "../../../lib/reactive/i18n.ts";
-import { listen } from "../../../lib/reactive/listener.ts";
 import { createTimeout } from "../../../lib/reactive/timers.ts";
 import "../../../styles/chat/context-breakdown.css";
 import { getContextNoticeViewModel } from "./chat-composer-context.tsx";
-import { ChatDetailsDesktopSection } from "./chat-details-desktop-section.tsx";
+import {
+  animateDetailsDesktopEntrance,
+  ChatDetailsDesktopSection,
+} from "./chat-details-desktop-section.tsx";
 import type { ChatDetailsProps } from "./chat-details-types.ts";
 
 registerEnglishCatalog(registerChatComposerEnglish);
@@ -69,33 +71,7 @@ export function ChatDetailsDesktopContext(
             return undefined;
           }
           entering = false;
-          const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
-          const height = shell.getBoundingClientRect().height;
-          shell.style.overflow = "clip";
-          const animation = shell.animate(
-            reduced.matches
-              ? [{ opacity: 0 }, { opacity: 1 }]
-              : [
-                  { height: "0px", opacity: 0 },
-                  { height: `${height}px`, opacity: 1 },
-                ],
-            {
-              duration: reduced.matches ? 100 : 200,
-              easing: getComputedStyle(shell).getPropertyValue("--ease-out").trim(),
-            },
-          );
-          const finish = () => {
-            animation.cancel();
-            shell.style.overflow = "";
-          };
-          animation.onfinish = finish;
-          const stopMotion = listen(reduced, "change", finish);
-          const stopFocus = listen(shell, "focusin", finish);
-          return () => {
-            animation.cancel();
-            stopMotion();
-            stopFocus();
-          };
+          return animateDetailsDesktopEntrance(shell);
         });
         return (
           <div ref={(element) => (shell = element)} class="chat-details-desktop-context">

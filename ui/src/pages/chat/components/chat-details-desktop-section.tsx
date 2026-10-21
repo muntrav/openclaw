@@ -2,8 +2,40 @@ import type { JSX } from "@solidjs/web";
 import { onCleanup } from "solid-js";
 import { Icon } from "../../../components/solid/icon.tsx";
 import { createLayoutMeasurement } from "../../../lib/reactive/layout-measurement.ts";
+import { listen } from "../../../lib/reactive/listener.ts";
 import type { ChatDetailsDesktopSectionId } from "./chat-details-types.ts";
 import "../../../styles/chat/details-desktop.css";
+
+/** First data arrival shares one entrance and focus/reduced-motion cleanup owner. */
+export function animateDetailsDesktopEntrance(shell: HTMLElement) {
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const height = shell.getBoundingClientRect().height;
+  shell.style.overflow = "clip";
+  const animation = shell.animate(
+    reduced.matches
+      ? [{ opacity: 0 }, { opacity: 1 }]
+      : [
+          { height: "0px", opacity: 0 },
+          { height: `${height}px`, opacity: 1 },
+        ],
+    {
+      duration: reduced.matches ? 100 : 200,
+      easing: getComputedStyle(shell).getPropertyValue("--ease-out").trim(),
+    },
+  );
+  const finish = () => {
+    animation.cancel();
+    shell.style.overflow = "";
+  };
+  animation.onfinish = finish;
+  const stopMotion = listen(reduced, "change", finish);
+  const stopFocus = listen(shell, "focusin", finish);
+  return () => {
+    animation.cancel();
+    stopMotion();
+    stopFocus();
+  };
+}
 
 export type ChatDetailsDesktopSectionProps = {
   section: ChatDetailsDesktopSectionId;
