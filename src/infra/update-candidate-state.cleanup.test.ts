@@ -2,39 +2,32 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import {
-  fixtureReceiptClientSource,
-  openFixtureReceiptChannel,
-  type FixtureReceiptChannel,
-} from "../../test/helpers/fixture-receipts.js";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { fixtureReceiptClientSource } from "../../test/helpers/fixture-receipts.js";
 import { isProcessAlive } from "../../test/helpers/process-wait.js";
 import { withinTest } from "../../test/helpers/promise.js";
 import { withRuntimePreload } from "../../test/helpers/runtime-preload.js";
 import * as commands from "../process/exec.js";
-import { runCommandBuffered, runUtf8CommandWithTimeout } from "../process/exec.js";
+import { runUtf8CommandWithTimeout } from "../process/exec.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { hasErrnoCode } from "./errno.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
-import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
-import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
-import { prepareUpdateCandidateStateSnapshot } from "./update-candidate-snapshot.js";
+import {
+  useStateReceipts,
+  createStateDatabase,
+  runStateWorker,
+  captureStateOperation as capture,
+  stateClock,
+  snapshotFixture,
+} from "./update-candidate-state-fixtures.test-support.js";
 import { readUpdateStateSchemaVersions } from "./update-candidate-state.js";
 import {
-  captureUpdateCandidateDeadline,
   inventoryUpdateCandidateStateWorker,
   materializeUpdateCandidateStateWorker,
 } from "./update-candidate-state.test-support.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
 
-let receipts: FixtureReceiptChannel;
-beforeAll(async () => {
-  receipts = await openFixtureReceiptChannel();
-});
-afterAll(async () => {
-  await receipts.close();
-});
+const receipts = useStateReceipts();
 
 // A worker can exit before its side-channel receipt arrives. Its marker is
 // published before the fault or reply that settles the operation.
@@ -71,39 +64,10 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-async function createDatabase(file: string, sql = ""): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const db = openNodeSqliteDatabase(file);
-  try {
-    db.exec(`PRAGMA user_version = 3; ${sql}`);
-  } finally {
-    db.close();
-  }
-}
-
-function capture<T>(operation: Promise<T>) {
-  return operation.then(
-    (value) => ({ value }),
-    (error: unknown) => ({ error }),
-  );
-}
-
-function runWorker(input: unknown, preload?: string, env?: NodeJS.ProcessEnv) {
-  const argv = [
-    process.execPath,
-    ...(preload ? ["--import", pathToFileURL(preload).href] : []),
-    ...resolveRuntimeWorkerArgv(
-      resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.updateCandidateState),
-    ),
-  ];
-  return runCommandBuffered(argv, {
-    input: JSON.stringify(input),
-    env,
-    timeoutMs: 30_000,
-    killGraceMs: 500,
-    maxOutputBytes: { stdout: 1024 * 1024, stderr: 20_000 },
-  });
-}
+const createDatabase = (file: string, sql = "") =>
+  createStateDatabase(file, `PRAGMA user_version = 3; ${sql}`);
+const runWorker = (input: unknown, preload?: string, env?: NodeJS.ProcessEnv) =>
+  runStateWorker(input, { env }, preload);
 
 it.each([
   { mode: "versions", cleanup: "transient", readError: false },
@@ -308,10 +272,7 @@ it.each([false, true].flatMap((legacy) => [false, true].map((expires) => ({ lega
       return inspectionResult([sharedVersion, { path: external, userVersion: 7 }]);
     });
 
-    const now = Date.now.bind(Date);
-    let elapsed = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
-    const expireDeadline = captureUpdateCandidateDeadline();
+    const advanceClock = stateClock();
     const operation = readUpdateStateSchemaVersions({ stateDir, config: {} });
     const outcome = capture(operation);
     try {
@@ -322,14 +283,14 @@ it.each([false, true].flatMap((legacy) => [false, true].map((expires) => ({ lega
         }),
       ]);
       // Modern inspection needs the external WAL bytes; legacy also needs shared's startup floor.
-      elapsed = legacy ? 4_700_000 : 4_500_000;
+      const elapsed = legacy ? 4_700_000 : 4_500_000;
+      advanceClock(elapsed);
       expect(signal.aborted).toBe(false);
       if (expires) {
         const aborted = new Promise<void>((resolve) => {
           signal.addEventListener("abort", () => resolve(), { once: true });
         });
-        elapsed += 400_000;
-        expireDeadline();
+        advanceClock(elapsed + 400_000, true);
         await aborted;
         expect(signal.aborted).toBe(true);
       }
@@ -519,24 +480,14 @@ it.for(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
       };
     `,
     );
-    const now = Date.now.bind(Date);
-    let elapsed = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
-    const expireDeadline = captureUpdateCandidateDeadline();
+    const advanceClock = stateClock();
     const controller = new AbortController();
-    const operation = prepareUpdateCandidateStateSnapshot({
-      config: {},
-      stateDir,
-      candidateRoot: root,
-      env: { TMPDIR: root },
-      workerEnv: () => ({
-        ...withRuntimePreload(process.env, preload),
-        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
-        XDG_CACHE_HOME: path.join(root, "unowned-cache"),
-        OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-      }),
-      signal: controller.signal,
-    });
+    const operation = snapshotFixture(root, stateDir, controller.signal, () => ({
+      ...withRuntimePreload(process.env, preload),
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+      XDG_CACHE_HOME: path.join(root, "unowned-cache"),
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+    }));
     const outcome = capture(operation);
     workerSettlement = outcome;
     try {
@@ -552,8 +503,7 @@ it.for(["cancel", "deadline", "disk-full", "cooperative-cancel"] as const)(
       if (failure === "cancel" || failure === "cooperative-cancel") {
         controller.abort(new Error("cancel rehearsal proof"));
       } else if (failure === "deadline") {
-        elapsed = 600_000;
-        expireDeadline();
+        advanceClock(600_000, true);
       }
       const result = await outcome;
       expect(result).toMatchObject({ error: expect.any(Error) });

@@ -8,13 +8,28 @@ import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import { resolveUpdateResultNextAction } from "../cli/update-cli/update-recovery-guidance.js";
 import type { SpawnResult } from "../process/exec.js";
 import { defaultRuntime } from "../runtime.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import * as diskSpace from "./disk-space.js";
 import { tryListenOnPort } from "./ports-probe.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import type { UpdateCandidateRehearsal } from "./update-candidate-rehearsal.js";
 import { buildUpdateRehearsalPathEnv } from "./update-rehearsal-paths.js";
+import type { UpdateRunStep } from "./update-run-record.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import type { UpdateStepResult } from "./update-step-result.js";
+
+export function holdCanaryProgress(matches: (step: UpdateRunStep) => boolean) {
+  const entered = createDeferredCore();
+  const receipt = createDeferredCore();
+  const onProgress = vi.fn((step: UpdateRunStep) => {
+    if (matches(step)) {
+      entered.resolve();
+      return receipt.promise;
+    }
+    return undefined;
+  });
+  return { entered: entered.promise, receipt, onProgress };
+}
 
 export async function createCanaryProcessFixture(
   root: string,

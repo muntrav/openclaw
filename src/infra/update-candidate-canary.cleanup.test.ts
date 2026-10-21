@@ -13,6 +13,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import {
   createCanarySnapshotResult,
+  holdCanaryProgress,
   FakeChild,
   stubHealthyGateway,
   canaryOutcomeStep,
@@ -160,23 +161,18 @@ describe("canary teardown evidence", () => {
   it.each(["candidate-doctor", "candidate-gateway-startup"])(
     "awaits the %s start receipt before launching its process",
     async (name) => {
-      const entered = createDeferredCore();
-      const receipt = createDeferredCore();
+      const { entered, receipt, onProgress } = holdCanaryProgress(
+        (step) => step.step === name && step.status === "in_progress",
+      );
       const refusal = new Error("check start receipt was refused");
       const onStep = vi.fn();
       const pending = validateUpdateCandidateCanary({
         ...canaryStateOptions(3_000),
         onStep,
-        onProgress: (step) => {
-          if (step.step === name && step.status === "in_progress") {
-            entered.resolve();
-            return receipt.promise;
-          }
-          return undefined;
-        },
+        onProgress,
       });
       try {
-        await Promise.race([entered.promise, pending]);
+        await Promise.race([entered, pending]);
         expect(mocks.spawn).toHaveBeenCalledTimes(name === "candidate-doctor" ? 0 : 5);
         receipt.reject(refusal);
         await expect(pending).rejects.toBe(refusal);
@@ -246,8 +242,9 @@ describe("canary teardown evidence", () => {
       const directory = path.join(root, "owned-cleanup-copy");
       await fs.mkdir(directory);
       vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-      const entered = createDeferredCore();
-      const receipt = createDeferredCore();
+      const { entered, receipt, onProgress } = holdCanaryProgress(
+        (step) => step.detail?.includes("waiting for filesystem removal") ?? false,
+      );
       const uncertain = new CommandProcessCleanupError();
       const remove = vi.spyOn(fs, "rm");
       const onWarning = vi.fn();
@@ -256,18 +253,12 @@ describe("canary teardown evidence", () => {
         directory,
         name: "candidate-state-cleanup",
         canRemove: async () => true,
-        onProgress: (step) => {
-          if (step.detail?.includes("waiting for filesystem removal")) {
-            entered.resolve();
-            return receipt.promise;
-          }
-          return undefined;
-        },
+        onProgress,
         onWarning,
       });
       const rejected = expect(pending).rejects.toBe(uncertain);
       try {
-        await entered.promise;
+        await entered;
         if (timing === "after-deadline") {
           await vi.advanceTimersByTimeAsync(300_000);
         }
