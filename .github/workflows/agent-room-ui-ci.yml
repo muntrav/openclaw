@@ -1,3 +1,4 @@
+# Managed CI for the Agent Room branch.
 name: Agent Room UI CI
 
 on:
