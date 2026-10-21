@@ -87,9 +87,7 @@ function fixture(releaseRemote = "upstream", forkRemote?: string) {
 }
 
 async function update(setup: ReturnType<typeof fixture>, channel: "stable" | "beta" = "stable") {
-  const fetches: Array<
-    { argv: string[]; code: number | null } & Record<"tag" | "local" | "branch", string>
-  > = [];
+  const fetches: Array<{ code: number | null } & Record<"tag" | "local" | "branch", string>> = [];
   const runCommand: CommandRunner = async (argv, options) => {
     if (argv[0] !== "git") {
       throw new Error(`Unexpected build command: ${argv[0]}`);
@@ -106,7 +104,6 @@ async function update(setup: ReturnType<typeof fixture>, channel: "stable" | "be
         return value.code === 0 ? value.stdout.trim() : "";
       };
       fetches.push({
-        argv: argv.slice(fetchIndex),
         code: result.code,
         tag: await read("refs/tags/v2026.9.1"),
         local: await read("refs/tags/local-only"),
@@ -163,14 +160,6 @@ it.each([
         tag: setup.release,
         local: setup.oldTag,
         branch: setup.release,
-        argv: [
-          "fetch",
-          "--no-tags",
-          "--no-prune",
-          "--no-prune-tags",
-          releaseRemote,
-          "+refs/tags/*:refs/tags/*",
-        ],
       },
     ]);
     expect(

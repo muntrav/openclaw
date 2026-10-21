@@ -25,6 +25,7 @@ import {
   writeRuntime,
   expectFile,
   readText,
+  runFixtureGit,
   writeFixtureTree,
 } from "./update-runner-git-candidate.test-support.js";
 import { prepareGitRuntimePromotion } from "./update-runner-git-runtime.js";
@@ -34,11 +35,7 @@ const inode = async (target: string) => (await fs.lstat(target, { bigint: true }
 const entries = async (target: string) =>
   (await fs.readdir(target, { recursive: true })).toSorted();
 async function initCandidate(candidate: string, ignored = "node_modules/\ndist/\ndist-runtime/\n") {
-  const result = await runCommandWithTimeout(
-    ["git", "-C", candidate, "init", "--initial-branch=main"],
-    { timeoutMs: 5000 },
-  );
-  expect(result.code, result.stderr).toBe(0);
+  await runFixtureGit(candidate, "init", "--initial-branch=main");
   await writeFixtureTree(candidate, { ".gitignore": ignored });
 }
 

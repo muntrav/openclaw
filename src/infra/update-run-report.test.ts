@@ -59,10 +59,8 @@ function resultStep(
   return { name, command: name, cwd: "/fixture", durationMs: 0, exitCode: 0, ...patch };
 }
 
-function failedStep(
-  step: string,
-  patch: Partial<UpdateRunRecord["steps"][number]> = {},
-): UpdateRunRecord["steps"][number] {
+type Step = UpdateRunRecord["steps"][number];
+function failedStep(step: string, patch: Partial<Step> = {}): Step {
   return { step, status: "failed", ...patch };
 }
 
@@ -195,11 +193,11 @@ it.each([true, false])("separates saved and current health (responding=%s)", (re
   expect(report.markdown.includes("Historical recovery advice:")).toBe(responding);
   if (responding) {
     expect(report.lines).not.toContain(record.origin.nextAction);
-    expect(report.markdown).toContain("supersedes saved claims that the Gateway is stopped");
-    expect(report.markdown.endsWith(record.origin.nextAction!)).toBe(false);
-    expect(report.markdown).toContain(
+    expectText(report.markdown, [
+      "supersedes saved claims that the Gateway is stopped",
       "Keep the candidate installed and do not roll back code alone.",
-    );
+    ]);
+    expect(report.markdown.endsWith(record.origin.nextAction!)).toBe(false);
   }
   expect(report.headline).not.toContain("gateway is running");
   expect(report.markdown).not.toContain("chat");
@@ -345,16 +343,9 @@ it.each([
   });
   const record = failed({
     ...(observed ? { steps: [recoveryStep] } : {}),
-    verification: {
-      versionMatch: observed,
-      port: 19123,
-      ...(observed
-        ? {
-            ...verified(version),
-            recovery: healthy(version),
-          }
-        : {}),
-    },
+    verification: observed
+      ? { port: 19123, ...verified(version), recovery: healthy(version) }
+      : { port: 19123, versionMatch: false },
   });
   const report = await failureReport(record);
   expect(report.body).toContain(
@@ -679,10 +670,7 @@ it.each<[UpdateRunRecord["status"], string | null, string]>([
 ])("keeps %s headline despite failed children (%s)", (status, reason, headline) => {
   const record = run({ status, reason, phase: "verifying" });
   expect(renderUpdateRunReport(record).headline).toBe(headline);
-  const report = renderUpdateRunReport({
-    ...record,
-    steps: [failedStep("finalize:doctor")],
-  });
+  const report = renderUpdateRunReport({ ...record, steps: [failedStep("finalize:doctor")] });
   expect(report.headline).toBe(headline);
   expect(report.headline).not.toContain("finalize:doctor");
 });
