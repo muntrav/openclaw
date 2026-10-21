@@ -249,6 +249,7 @@ describe("memory_search real manager", () => {
       "Tell the user to run: openclaw memory status --index --agent main. Rebuilding may call the configured embedding provider and can incur provider cost.";
     const primary = await tool.execute("paused-primary", { query: "alpha" });
     expect(primary.details).toMatchObject({
+      results: [],
       disabled: true,
       unavailable: true,
       error: "index was built for model old-embed, expected new-embed",

@@ -1289,26 +1289,17 @@ it.each([false, true])(
 
 it("picks up slugged daily memory files for rem-backfill (#69536)", async () => {
   const workspaceDir = await createWorkspace();
-  const historyDir = path.join(workspaceDir, "history");
-  await fs.mkdir(historyDir, { recursive: true });
-  const sluggedPath = path.join(historyDir, "2025-01-01-vendor-pitch.md");
-  const secondSluggedPath = path.join(historyDir, "2025-01-01-travel-rule.md");
-  await fs.writeFile(
-    sluggedPath,
-    [
-      "## Preferences Learned",
-      '- Always use "Happy Together" calendar for flights and reservations.',
-    ].join("\n") + "\n",
-    "utf-8",
-  );
-  await fs.writeFile(
-    secondSluggedPath,
-    ["## Preferences Learned", "- Always book aisle seats for red-eye flights."].join("\n") + "\n",
-    "utf-8",
-  );
+  const sluggedPath = await writeHistory(workspaceDir, "2025-01-01-vendor-pitch.md", [
+    "## Preferences Learned",
+    '- Always use "Happy Together" calendar for flights and reservations.',
+  ]);
+  const secondSluggedPath = await writeHistory(workspaceDir, "2025-01-01-travel-rule.md", [
+    "## Preferences Learned",
+    "- Always book aisle seats for red-eye flights.",
+  ]);
   mockWorkspace(workspaceDir);
   const errors = spyRuntimeErrors(defaultRuntime);
-  await run(["rem-backfill", "--path", historyDir]);
+  await run(["rem-backfill", "--path", path.dirname(sluggedPath)]);
   expect(
     errors.mock.calls.some((call) => String(call[0]).includes("found no YYYY-MM-DD.md files")),
   ).toBe(false);
