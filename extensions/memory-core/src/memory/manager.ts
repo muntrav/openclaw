@@ -390,8 +390,8 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
         const joinedWatchGeneration = this.syncingMemoryWatchGeneration;
         await this.syncing;
         if (!this.closing && !this.closed) {
-          // Join only newer watch generations; dirty or suspended work alone cannot
-          // authorize a new pass. Another waiter may already own the next generation.
+          // MemoryManagerSessionSyncOps resumes yielded work via syncBackground after idle.
+          // Join only newer watch generations; another waiter may already own that pass.
           const nextSync = this.syncing;
           if (nextSync !== null && this.syncingMemoryWatchGeneration > joinedWatchGeneration) {
             return await nextSync;
