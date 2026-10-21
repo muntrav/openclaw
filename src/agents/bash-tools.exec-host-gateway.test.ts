@@ -1570,50 +1570,37 @@ describe("processGatewayAllowlist", () => {
     expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
   });
 
-  it("binds a full-policy timeout to the current allowlist fallback plan", async () => {
-    const { command, enforcedCommand } = await mockAllowlistTimeoutFallback("full");
-    approvalDecisionMock.mockResolvedValue(null);
-    const result = await runGatewayAllowlist({
-      command,
-      security: "full",
-      ask: "always",
-      turnSourceChannel: "webchat",
-    });
+  it.each([
+    { name: "interactive", inline: false, trigger: undefined, turnSourceChannel: "webchat" },
+    { name: "headless", inline: true, trigger: "cron", turnSourceChannel: undefined },
+  ] as const)(
+    "commits the $name allowlist timeout fallback before returning its bound plan",
+    async ({ inline, trigger, turnSourceChannel }) => {
+      const { command, enforcedCommand } = await mockAllowlistTimeoutFallback("full");
+      approvalRouteFixture.inline = inline;
+      if (!inline) {
+        approvalDecisionMock.mockResolvedValue(null);
+      }
+      const result = await runGatewayAllowlist({
+        command,
+        security: "full",
+        ask: "always",
+        trigger,
+        turnSourceChannel,
+      });
 
-    expect(result.execCommandOverride).toBe(enforcedCommand);
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "ask-fallback",
-          security: "allowlist",
-          allowlistSatisfied: true,
+      expect(result.execCommandOverride).toBe(enforcedCommand);
+      expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          authorization: expect.objectContaining({
+            source: "ask-fallback",
+            security: "allowlist",
+            allowlistSatisfied: true,
+          }),
         }),
-      }),
-    );
-  });
-
-  it("commits a headless allowlist timeout fallback before returning its bound plan", async () => {
-    const { command, enforcedCommand } = await mockAllowlistTimeoutFallback("full");
-    approvalRouteFixture.inline = true;
-
-    const result = await runGatewayAllowlist({
-      command,
-      security: "full",
-      ask: "always",
-      trigger: "cron",
-    });
-
-    expect(result.execCommandOverride).toBe(enforcedCommand);
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "ask-fallback",
-          security: "allowlist",
-          allowlistSatisfied: true,
-        }),
-      }),
-    );
-  });
+      );
+    },
+  );
 
   it("denies allowlist timeout fallback without an enforceable plan", async () => {
     requiresExecApprovalMock.mockReturnValue(true);

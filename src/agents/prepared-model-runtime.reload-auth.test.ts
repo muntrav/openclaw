@@ -29,6 +29,15 @@ const buildResult = (agentId = "default") => ({
 });
 const build = () => createDeferred<ReturnType<typeof buildResult>>();
 const refresh = (config: OpenClawConfig = {}) => refreshRuntime(config, { gatewayLifecycle: true });
+async function start(agentIds = ["default"], config: OpenClawConfig = {}) {
+  mocks.configuredAgentIds = agentIds;
+  await refresh(config);
+}
+function holdBuilds(...builds: ReturnType<typeof build>[]) {
+  for (const pending of builds) {
+    mocks.ensureOpenClawModelsJson.mockImplementationOnce(async () => await pending.promise);
+  }
+}
 const mutate = (agentId = "default") =>
   mocks.mutationListener?.({
     agentDir: fixture.state.agentDir(agentId),
@@ -112,10 +121,8 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("commits auth invalidation inside the active lifecycle publication", async () => {
-    mocks.configuredAgentIds = ["default", "worker"];
-    const initialConfig = {};
     const replacementConfig = { agents: { defaults: { model: "openai/gpt-5.5" } } };
-    await refresh(initialConfig);
+    await start(["default", "worker"]);
     const configBuild = build();
     const authBuild = build();
     const order: string[] = [];
@@ -203,15 +210,12 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("rejects an adopted auth gate when config reload fails and permits recovery", async () => {
-    mocks.configuredAgentIds = ["default"];
-    const initialConfig = {};
     const replacementConfig = { plugins: {} };
-    await refresh(initialConfig);
+    await start();
     const authBuild = build();
     const reloadError = new Error("replacement config failed");
-    mocks.ensureOpenClawModelsJson
-      .mockImplementationOnce(async () => await authBuild.promise)
-      .mockRejectedValueOnce(reloadError);
+    holdBuilds(authBuild);
+    mocks.ensureOpenClawModelsJson.mockRejectedValueOnce(reloadError);
 
     let authWaiter: Dispatch | undefined;
     let reload: Refresh | undefined;
@@ -241,24 +245,20 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("continues with a corrective auth mutation after the earlier build fails", async () => {
-    mocks.configuredAgentIds = ["default"];
-    const config = {};
     const agentDir = fixture.state.agentDir("default");
-    await refresh(config);
+    await start();
     const firstBuild = build();
     const secondBuild = build();
     const firstError = new Error("superseded auth build failed");
-    mocks.ensureOpenClawModelsJson
-      .mockImplementationOnce(async () => await firstBuild.promise)
-      .mockImplementationOnce(async () => await secondBuild.promise);
+    holdBuilds(firstBuild, secondBuild);
 
     let dispatch: Dispatch | undefined;
     try {
-      mocks.mutationListener?.({ agentDir, affectsInheritedStores: false });
+      mutate();
       await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
       dispatch = loadDispatch({ agentId: "default" });
       void dispatch.catch(() => undefined);
-      mocks.mutationListener?.({ agentDir, affectsInheritedStores: false });
+      mutate();
       firstBuild.reject(firstError);
       await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(3));
       await expectPending(dispatch);
@@ -274,8 +274,7 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("keeps transitively overlapping inherited auth mutations atomic", async () => {
-    mocks.configuredAgentIds = ["default", "worker", "research"];
-    await refresh({});
+    await start(["default", "worker", "research"]);
     const agentDirs = {
       default: fixture.state.agentDir("default"),
       research: fixture.state.agentDir("research"),
@@ -298,8 +297,8 @@ describe("prepared model runtime reload auth adoption", () => {
 
     let dispatches: Record<keyof typeof builds, Dispatch> | undefined;
     try {
-      mocks.mutationListener?.({ agentDir: agentDirs.worker, affectsInheritedStores: false });
-      mocks.mutationListener?.({ agentDir: agentDirs.research, affectsInheritedStores: false });
+      mutate("worker");
+      mutate("research");
       mocks.mutationListener?.({ affectsInheritedStores: true });
       dispatches = Object.fromEntries(
         Object.keys(agentDirs).map((agentId) => [agentId, loadDispatch({ agentId })]),
@@ -328,9 +327,7 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("commits a successful owner when the final independent owner fails", async () => {
-    mocks.configuredAgentIds = ["default", "worker", "research"];
-    const config = {};
-    await refresh(config);
+    await start(["default", "worker", "research"]);
     const workerBuild = build();
     const researchBuild = build();
     const researchError = new Error("final research auth build failed");
@@ -381,9 +378,7 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("isolates reply projection replacement failure to its component", async () => {
-    mocks.configuredAgentIds = ["default", "worker", "research"];
-    const config = {};
-    await refresh(config);
+    await start(["default", "worker", "research"]);
     const projectionError = new Error("reply projection replacement failed");
     const { events, unregister } = observePhases();
     const replaceSpy = vi
@@ -413,16 +408,12 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("lets an adopting reload settle the gate after the obsolete auth build fails", async () => {
-    mocks.configuredAgentIds = ["default"];
-    const initialConfig = {};
     const replacementConfig = { plugins: {} };
-    await refresh(initialConfig);
+    await start();
     const authBuild = build();
     const configBuild = build();
     const obsoleteAuthError = new Error("obsolete auth build failed");
-    mocks.ensureOpenClawModelsJson
-      .mockImplementationOnce(async () => await authBuild.promise)
-      .mockImplementationOnce(async () => await configBuild.promise);
+    holdBuilds(authBuild, configBuild);
 
     let authWaiter: Dispatch | undefined;
     let reload: Refresh | undefined;
@@ -567,10 +558,9 @@ describe("prepared model runtime reload auth adoption", () => {
   });
 
   it("adopts remaining auth work after another owner already published", async () => {
-    mocks.configuredAgentIds = ["default", "worker", "research"];
     const initialConfig = {};
     const replacementConfig = { plugins: {} };
-    await refresh(initialConfig);
+    await start(["default", "worker", "research"], initialConfig);
     const workerAuthBuild = build();
     const researchAuthBuild = build();
     const replacementWorkerBuild = build();
