@@ -39,6 +39,26 @@ function mountFacepile(props: ViewerFacepileProps) {
   mountSolid(() => facepile);
   return facepile;
 }
+const viewer = <T extends Partial<PresenceViewer> = object>(
+  id: string,
+  name: string,
+  extra?: T,
+) => ({
+  id,
+  name,
+  watchedSessions: [],
+  ...extra,
+});
+async function expectUpdated(element: { updateComplete: Promise<boolean> }, check: () => void) {
+  await waitForSolid(async () => {
+    await element.updateComplete;
+    check();
+  });
+}
+function avatarProvider(gateway: ApplicationContext["gateway"]) {
+  // SAFETY: Avatar consumers use only the Gateway capability in this fixture.
+  return createSolidApplicationContextProvider({ gateway } as ApplicationContext);
+}
 const participant = (
   id: string,
   label: string,
@@ -61,10 +81,7 @@ afterEach(() => {
 it.each(["session", "profile"] as const)(
   "labels the shared owner avatar in %s context",
   async (variant) => {
-    const avatar = mountAvatar(
-      { id: "gateway-owner", name: "Saved owner name", watchedSessions: [] },
-      variant,
-    );
+    const avatar = mountAvatar(viewer("gateway-owner", "Saved owner name"), variant);
     await avatar.updateComplete;
     expect(avatar.querySelector(".viewer-avatar")?.getAttribute("aria-label")).toBe(
       variant === "profile" ? "Saved owner name" : "Shared owner",
@@ -73,12 +90,7 @@ it.each(["session", "profile"] as const)(
 );
 
 it("uses the same user initials and identity hue in the roster and attributed chat", async () => {
-  const user: PresenceViewer = {
-    id: "profile-riley",
-    name: "Riley",
-    email: "riley@example.test",
-    watchedSessions: [],
-  };
+  const user = viewer("profile-riley", "Riley", { email: "riley@example.test" });
   const viewerAvatar = mountAvatar(user);
 
   const chat = document.createElement("div");
@@ -96,8 +108,7 @@ it("uses the same user initials and identity hue in the roster and attributed ch
     name: user.name,
     username: user.email,
   });
-  await waitForSolid(async () => {
-    await viewerAvatar.updateComplete;
+  await expectUpdated(viewerAvatar, () => {
     const rosterInitials = viewerAvatar.querySelector<HTMLElement>(".viewer-avatar > span");
     const chatInitials = chat.querySelector(".chat-author-avatar__initials");
     expect(rosterInitials?.textContent?.trim()).toBe(expected.initials);
@@ -112,30 +123,24 @@ it("uses the same user initials and identity hue in the roster and attributed ch
 });
 
 it("uses the shared resolver and rejects cross-origin presence avatar metadata", async () => {
-  const avatar = mountAvatar({
-    id: "profile-mallory",
-    name: "Mallory",
-    avatarUrl: "https://evil.example/avatar.png",
-    watchedSessions: [],
-  });
-
-  await waitForSolid(async () => {
-    await avatar.updateComplete;
+  const avatar = mountAvatar(
+    viewer("profile-mallory", "Mallory", {
+      avatarUrl: "https://evil.example/avatar.png",
+    }),
+  );
+  await expectUpdated(avatar, () => {
     expect(avatar.querySelector("img")).toBeNull();
     expect(avatar.textContent?.trim()).toBe("M");
   });
 });
 
 it("renders trusted presence avatar routes directly", async () => {
-  const avatar = mountAvatar({
-    id: "profile-ada",
-    name: "Ada Lovelace",
-    avatarUrl: "/api/users/profile-ada/avatar",
-    watchedSessions: [],
-  });
-
-  await waitForSolid(async () => {
-    await avatar.updateComplete;
+  const avatar = mountAvatar(
+    viewer("profile-ada", "Ada Lovelace", {
+      avatarUrl: "/api/users/profile-ada/avatar",
+    }),
+  );
+  await expectUpdated(avatar, () => {
     expect(avatar.querySelector("img")?.getAttribute("src")).toBe("/api/users/profile-ada/avatar");
   });
 });
@@ -156,8 +161,7 @@ it("keeps qualified and unqualified prepared presence faces distinct", async () 
     staticUsers: projectOnlinePresenceViewers(payload),
   });
 
-  await waitForSolid(async () => {
-    await facepile.updateComplete;
+  await expectUpdated(facepile, () => {
     expect(attrs(facepile, "img", "src")).toEqual([]);
     expect(attrs(facepile, "a", "href")).toEqual(["/activity/ada-lovelace-c3e324520467"]);
     expect(attr(facepile, ".viewer-facepile", "data-viewer-count")).toBe("2");
@@ -177,19 +181,15 @@ it("shares the current self avatar with typed owner faces missing a revision", a
   vi.spyOn(URL, "createObjectURL")
     .mockReturnValueOnce("blob:shared-viewer-avatar")
     .mockReturnValueOnce("blob:updated-viewer-avatar");
-  const user = {
-    id: "profile-ada",
+  const user = viewer("profile-ada", "Ada Lovelace", {
     identity: { type: "profile", id: "profile-ada" },
     email: "ada@example.test",
-    name: "Ada Lovelace",
     avatarUrl: "/api/users/profile-ada/avatar?v=7",
-    watchedSessions: [],
-  } satisfies PresenceViewer;
+  });
   const fixture = createApplicationGateway();
   const { gateway } = fixture;
   fixture.publish({ ...gateway.snapshot, phase: "connected", selfUser: user });
-  // SAFETY: Avatar consumers use only the Gateway capability in this fixture.
-  const provider = createSolidApplicationContextProvider({ gateway } as ApplicationContext);
+  const provider = avatarProvider(gateway);
   const view = mountSolid(
     () =>
       [user, { ...user, avatarUrl: undefined }].map((avatarUser) =>
@@ -205,9 +205,9 @@ it("shares the current self avatar with typed owner faces missing a revision", a
     "https://gateway.example.test/api/users/profile-ada/avatar?v=7",
     expect.objectContaining({ headers: { Authorization: "Bearer viewer-token" } }),
   );
-  await resolveAvatarImageUrl(user.avatarUrl);
+  await resolveAvatarImageUrl("/api/users/profile-ada/avatar?v=7");
   await settle(avatars);
-  expect(avatars.map((avatar) => avatar.querySelector("img")?.getAttribute("src"))).toEqual([
+  expect(avatars.map((avatar) => attr(avatar, "img", "src"))).toEqual([
     "blob:shared-viewer-avatar",
     "blob:shared-viewer-avatar",
   ]);
@@ -227,7 +227,7 @@ it("shares the current self avatar with typed owner faces missing a revision", a
   ]);
   await resolveAvatarImageUrl("/api/users/profile-ada/avatar?v=8");
   await settle(avatars);
-  expect(avatars.map((avatar) => avatar.querySelector("img")?.getAttribute("src"))).toEqual([
+  expect(avatars.map((avatar) => attr(avatar, "img", "src"))).toEqual([
     "blob:shared-viewer-avatar",
     "blob:updated-viewer-avatar",
   ]);
@@ -304,8 +304,7 @@ it("renders ordered static participant actors without presence filtering", async
     ],
   });
 
-  await waitForSolid(async () => {
-    await facepile.updateComplete;
+  await expectUpdated(facepile, () => {
     expect(attrs(facepile, ".viewer-avatar:not(.viewer-avatar--overflow)", "aria-label")).toEqual([
       "Ada",
       "Research",
@@ -336,8 +335,7 @@ it("excludes displayed owners and participants before choosing visible avatars a
     },
   });
 
-  await waitForSolid(async () => {
-    await facepile.updateComplete;
+  await expectUpdated(facepile, () => {
     expect(attrs(facepile, "[data-viewer-id]", "data-viewer-id")).toEqual(["alice", "bob"]);
   });
   expect(attr(facepile, ".viewer-facepile", "data-viewer-count")).toBe("3");
@@ -367,8 +365,7 @@ it("excludes authenticated self when the browser's own presence row lacks a user
     },
   });
 
-  await waitForSolid(async () => {
-    await facepile.updateComplete;
+  await expectUpdated(facepile, () => {
     expect(facepile.querySelector('[data-viewer-id="self"]')).toBeNull();
     expect(facepile.querySelector('[data-viewer-id="alice"]')).not.toBeNull();
   });
@@ -463,14 +460,10 @@ it("keeps a newly advertised teammate avatar ahead of cached directory availabil
       ],
     })),
   });
-  // SAFETY: Avatar consumers use only the Gateway capability in this fixture.
-  const provider = createSolidApplicationContextProvider({ gateway } as ApplicationContext);
-  const user = {
-    id: "teammate",
+  const provider = avatarProvider(gateway);
+  const user = viewer("teammate", "Teammate", {
     identity: { type: "profile" as const, id: "teammate" },
-    name: "Teammate",
-    watchedSessions: [],
-  };
+  });
   const view = mountSolid(() => createComponent(ViewerAvatar, { user }), {
     wrapper: provider.wrapper,
   });
