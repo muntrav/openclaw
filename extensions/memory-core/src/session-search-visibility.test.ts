@@ -19,6 +19,11 @@ const visibilityConfig = (visibility: "all" | "agent" | "self" = "self") =>
 const entry = (id: string, updatedAt: number, metadata?: Parameters<typeof sessionEntry>[3]) =>
   sessionEntry(id, updatedAt, `/tmp/sessions/${id}.jsonl`, metadata);
 const directEntry = (id: string, updatedAt: number) => entry(id, updatedAt, { chatType: "direct" });
+const directDelivery = (id: string) =>
+  normalizeSessionDeliveryState({
+    context: { channel: "discord", to: `user:${id}` },
+    origin: { provider: "discord", chatType: "direct", to: `user:${id}` },
+  });
 function filter(hits: MemorySearchResult[], overrides: Partial<FilterOptions> = {}) {
   return filterMemorySearchHitsBySessionVisibility({
     cfg: visibilityConfig(),
@@ -30,10 +35,19 @@ function filter(hits: MemorySearchResult[], overrides: Partial<FilterOptions> = 
 }
 function recall(hits: MemorySearchResult[], overrides: Partial<FilterOptions> = {}) {
   return filter(hits, {
-    conversationRecall: { anchorSessionKey, scope: "same-agent-private", corpus: "sessions" },
+    conversationRecall: recallContext(),
     ...overrides,
   });
 }
+
+const recallContext = (
+  anchor = anchorSessionKey,
+  corpus: "sessions" | "configured" = "sessions",
+) => ({
+  anchorSessionKey: anchor,
+  scope: "same-agent-private" as const,
+  corpus,
+});
 
 const crossAgentStore: Record<string, TestSessionEntry> = {
   "agent:peer:only": sessionEntry("w1", 1, "/tmp/sessions/w1.jsonl"),
@@ -74,11 +88,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
     const filtered = await filter(hits, {
       cfg: visibilityConfig("all"),
       requesterSessionKey: "agent:main:main",
-      conversationRecall: {
-        anchorSessionKey: "agent:main:main",
-        scope: "same-agent-private",
-        corpus: "configured",
-      },
+      conversationRecall: recallContext("agent:main:main", "configured"),
     });
     expect(filtered).toEqual(hits);
     expect(sessionTranscriptHit.loadCombinedSessionStoreForGatewayAsync).not.toHaveBeenCalled();
@@ -106,31 +116,17 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
     const explicitAnchor = "agent:main:explicit:laptop";
     combinedSessionStore = {
       [explicitAnchor]: entry("current", 2, {
-        delivery: normalizeSessionDeliveryState({
-          context: { channel: "discord", to: "user:current" },
-          origin: { provider: "discord", chatType: "direct", to: "user:current" },
-        }),
+        delivery: directDelivery("current"),
       }),
       "agent:main:explicit:phone:group:shadow": entry("explicit-private", 1, {
         chatType: "direct",
-        delivery: normalizeSessionDeliveryState({
-          context: { channel: "discord", to: "user:explicit-private" },
-          origin: {
-            provider: "discord",
-            chatType: "direct",
-            to: "user:explicit-private",
-          },
-        }),
+        delivery: directDelivery("explicit-private"),
       }),
     };
     const hit = searchHit("sessions/explicit-private.jsonl", "sessions", "private context");
     const filtered = await recall([hit], {
       requesterSessionKey: `${explicitAnchor}:active-memory:123456abcdef`,
-      conversationRecall: {
-        anchorSessionKey: explicitAnchor,
-        scope: "same-agent-private",
-        corpus: "sessions",
-      },
+      conversationRecall: recallContext(explicitAnchor),
     });
 
     expect(filtered).toEqual([hit]);
@@ -184,11 +180,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
     const filtered = await recall([hit], {
       cfg,
       requesterSessionKey: "agent:main:global",
-      conversationRecall: {
-        anchorSessionKey: "agent:main:global",
-        scope: "same-agent-private",
-        corpus: "sessions",
-      },
+      conversationRecall: recallContext("agent:main:global"),
     });
 
     expect(filtered).toStrictEqual([]);
@@ -234,11 +226,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
     const filtered = await recall([hit], {
       cfg: visibilityConfig("agent"),
       requesterSessionKey: "agent:main:explicit:laptop:active-memory:123456abcdef",
-      conversationRecall: {
-        anchorSessionKey: "agent:main:explicit:laptop",
-        scope: "same-agent-private",
-        corpus: "sessions",
-      },
+      conversationRecall: recallContext("agent:main:explicit:laptop"),
     });
 
     expect(filtered).toStrictEqual([]);
@@ -273,11 +261,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
       "agent:main:webchat:direct:owner": directEntry("past", 1),
     };
     const hit = searchHit("sessions/past.jsonl", "sessions", "private context");
-    const conversationRecall = {
-      anchorSessionKey: "agent:main:telegram:group:family",
-      scope: "same-agent-private" as const,
-      corpus: "sessions" as const,
-    };
+    const conversationRecall = recallContext("agent:main:telegram:group:family");
 
     const [sharedAnchor, mismatchedAnchor, sandboxed] = await Promise.all([
       recall([hit], {
@@ -309,11 +293,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
     const filtered = await recall([memoryHit, sessionHit], {
       cfg: visibilityConfig("all"),
       requesterSessionKey: "agent:main:main:active-memory:abcdef123456",
-      conversationRecall: {
-        anchorSessionKey: "agent:main:main",
-        scope: "same-agent-private",
-        corpus: "configured",
-      },
+      conversationRecall: recallContext("agent:main:main", "configured"),
     });
 
     expect(filtered).toEqual([memoryHit]);

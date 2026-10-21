@@ -654,7 +654,6 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "extensions/memory-core/src/session-search-visibility.test.ts",
   "extensions/memory-core/src/standing-intents.async.test.ts",
   "extensions/memory-core/src/tools.citations.test.ts",
-  "extensions/memory-core/src/tools.index-upgrade.test.ts",
   "extensions/memory-core/src/tools.test.ts",
   "extensions/memory-lancedb/index.test.ts",
   "extensions/memory-lancedb/startup-imports.test.ts",

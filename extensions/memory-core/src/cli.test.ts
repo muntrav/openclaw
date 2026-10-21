@@ -272,13 +272,7 @@ async function useRealManager() {
 
 function setMemorySecret(id: string) {
   getRuntimeConfig.mockReturnValue({
-    memory: {
-      search: {
-        remote: {
-          apiKey: { source: "env", provider: "default", id },
-        },
-      },
-    },
+    memory: { search: { remote: { apiKey: { source: "env", provider: "default", id } } } },
   });
 }
 
@@ -875,12 +869,7 @@ it("fans JSON status out to every keyed agent entry", async () => {
 
 it("repairs invalid recall metadata and stale locks with status --fix", async () => {
   const workspaceDir = await createWorkspace();
-  await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
-  await fs.writeFile(
-    path.join(workspaceDir, "memory", "2026-04-03.md"),
-    "Vector router cache note\n",
-    "utf-8",
-  );
+  await writeDailyMemoryNote(workspaceDir, "2026-04-03", ["Vector router cache note"]);
   await shortTermTesting.writeRawRecallStore(workspaceDir, {
     version: 1,
     updatedAt: "2026-04-04T00:00:00.000Z",
@@ -1436,10 +1425,7 @@ it("rolls back grounded staged short-term entries without touching diary rollbac
     },
   ]);
   expect(staged[0]?.queryHashes).toHaveLength(2);
-  mockManager({
-    status: () => memoryStatus({ workspaceDir }),
-    close,
-  });
+  mockStatus({ workspaceDir }, { close });
   await run("rem-backfill --rollback-short-term");
   const entries = await readRecalls({ workspaceDir });
   expect(entries).toHaveLength(0);
@@ -1579,26 +1565,17 @@ it("honors the configured prior-entry loss limit during CLI promotion", async ()
       .join("\n"),
     "utf-8",
   );
-  await writeDailyMemoryNote(workspaceDir, "2026-04-10", ["Retain the release checklist."]);
-  await recordRecall(
-    workspaceDir,
-    "release checklist",
-    recallResult("memory/2026-04-10.md", "Retain the release checklist."),
-  );
+  const { recall } = await dailyRecallFixture(workspaceDir, "2026-04-10", [
+    ["Retain the release checklist.", 0.91],
+  ]);
+  await recall("release checklist", 1);
   getRuntimeConfig.mockReturnValue({
     agents: {
       entries: { main: { workspace: workspaceDir, bootstrapMaxChars: 1_400 } },
     },
-    plugins: {
-      entries: {
-        "memory-core": {
-          config: { dreaming: { phases: { deep: { maxPriorEntryLossFraction: 1 } } } },
-        },
-      },
-    },
+    ...memoryCoreConfig({ dreaming: { phases: { deep: { maxPriorEntryLossFraction: 1 } } } }),
   });
-  const close = vi.fn(async () => {});
-  mockManager({ status: () => memoryStatus({ workspaceDir }), close });
+  mockWorkspace(workspaceDir);
   await run(["promote", "--apply", ...unrestrictedPromotion]);
   const memory = await fs.readFile(path.join(workspaceDir, "MEMORY.md"), "utf-8");
   expect(memory).toContain("Retain the release checklist.");
