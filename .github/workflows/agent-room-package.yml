@@ -1,0 +1,60 @@
+name: Agent Room Package Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch or commit to package
+        required: true
+        type: string
+      release_tag:
+        description: Optional prerelease tag; defaults to the target SHA
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Build and publish OpenClaw package artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_VERSION: "24.21.0"
+    steps:
+      - name: Checkout target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Build package
+        run: pnpm build:package
+
+      - name: Pack package
+        run: |
+          mkdir -p artifact
+          npm pack --ignore-scripts --pack-destination artifact
+          test "$(find artifact -maxdepth 1 -name '*.tgz' | wc -l)" -eq 1
+
+      - name: Publish prerelease artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          tag="${INPUT_RELEASE_TAG:-agent-room-canary-${sha:0:12}}"
+          gh release delete "$tag" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release create "$tag" artifact/*.tgz             --repo "$GITHUB_REPOSITORY"             --target "$sha"             --title "Agent Room canary ${sha:0:12}"             --notes "Remote-built OpenClaw package for Agent Room canary validation at ${sha}."             --prerelease
