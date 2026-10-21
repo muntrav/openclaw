@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync as realSpawnSync } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
@@ -24,6 +25,7 @@ import {
   expectRuntime,
   writeRuntime,
   expectFile,
+  expectMissing,
   readText,
   runFixtureGit,
   writeFixtureTree,
@@ -184,7 +186,7 @@ describe("Git runtime promotion", () => {
       await promotion.restore();
       await expectRuntime(root, "original");
       await promotion.cleanup();
-      await expect(fs.stat(path.dirname(backup))).rejects.toMatchObject({ code: "ENOENT" });
+      await expectMissing(path.dirname(backup));
     },
   );
 
@@ -335,40 +337,36 @@ describe("Git runtime promotion", () => {
     async (phase) => {
       const candidateRoot = await createCandidate();
       const outside = path.join(directory, "outside-packages");
-      if (phase === "prepare") {
-        await fs.rename(path.join(root, "packages"), outside);
-        await fs.symlink(outside, path.join(root, "packages"), "junction");
-        const before = await entries(outside);
-        await expect(preparePromotion(candidateRoot, assertDestination)).rejects.toThrow(
-          "symbolic link",
-        );
-        expect(await entries(outside)).toEqual(before);
-        // Restore the fixture's physical depth before resolving its relative dependency links.
-        await fs.unlink(path.join(root, "packages"));
-        await fs.rename(outside, path.join(root, "packages"));
-        await expectRuntime(root, "original");
-        return;
-      }
-      const promotion = await preparePromotion(candidateRoot, assertDestination);
-      if (phase !== "activate") {
+      const promotion =
+        phase === "prepare" ? undefined : await preparePromotion(candidateRoot, assertDestination);
+      if (promotion && phase !== "activate") {
         await promotion.activate();
         await expectRuntime(root, "candidate");
       }
-      const heldPackages = path.join(directory, "held-packages");
+      const heldPackages = phase === "prepare" ? outside : path.join(directory, "held-packages");
       const outsideModules = path.join(outside, "runtime", "node_modules");
-      await writeFixtureTree(outsideModules, { "operator.cjs": "outside content\n" });
+      if (promotion) {
+        await writeFixtureTree(outsideModules, { "operator.cjs": "outside content\n" });
+      }
       await fs.rename(path.join(root, "packages"), heldPackages);
       await fs.symlink(outside, path.join(root, "packages"), "junction");
-
-      await expect(promotion[phase]()).rejects.toThrow("symbolic link");
-      await expectFile(path.join(outsideModules, "operator.cjs"), "outside content\n");
-      expect(await fs.readdir(outsideModules)).toEqual(["operator.cjs"]);
-
+      const before = await entries(outside);
+      await expect(
+        phase === "prepare"
+          ? preparePromotion(candidateRoot, assertDestination)
+          : promotion![phase](),
+      ).rejects.toThrow("symbolic link");
+      expect(await entries(outside)).toEqual(before);
+      if (promotion) {
+        await expectFile(path.join(outsideModules, "operator.cjs"), "outside content\n");
+        expect(await fs.readdir(outsideModules)).toEqual(["operator.cjs"]);
+      }
+      // Restore physical depth before resolving the fixture's relative dependency links.
       await fs.unlink(path.join(root, "packages"));
       await fs.rename(heldPackages, path.join(root, "packages"));
-      await promotion.restore();
+      await promotion?.restore();
       await expectRuntime(root, "original");
-      await promotion.cleanup();
+      await promotion?.cleanup();
     },
   );
 
@@ -525,4 +523,3 @@ runtimeIt.for([false, true])(
     }
   },
 );
-import assert from "node:assert/strict";

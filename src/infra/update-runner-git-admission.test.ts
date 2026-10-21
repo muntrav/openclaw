@@ -66,6 +66,32 @@ function snapshotTree(root: string): string[] {
     });
 }
 
+async function expectReadOnlyInspection(
+  state: ReturnType<typeof fixture>,
+  run: (options: UpdateRunnerOptions) => ReturnType<typeof state.run> = state.run,
+  reachable = true,
+) {
+  const before = snapshotTree(state.install);
+  const refusal = new Error("incompatible database");
+  const inspect = vi.fn(async (target) => {
+    expect(target).toEqual(targetDescriptor(state.target));
+    throw refusal;
+  });
+  const pending = run({
+    inspectGitTarget: inspect,
+    validateCandidate: forbidden("validate a candidate"),
+    beforeGitMutation: forbidden("mutate the installed checkout"),
+    runGitDoctor: forbidden("run Doctor"),
+  });
+  if (reachable) {
+    await expect(pending).rejects.toBe(refusal);
+  } else {
+    await expect(pending).resolves.toMatchObject({ status: "error", reason: "fetch-failed" });
+  }
+  expect(inspect).toHaveBeenCalledTimes(reachable ? 1 : 0);
+  expect(snapshotTree(state.install)).toEqual(before);
+}
+
 it.each(
   (["sha1", "sha256"] as const).flatMap((objectFormat) =>
     [false, true].map((cached) => ({ objectFormat, cached })),
@@ -593,33 +619,18 @@ it.each([
       },
       () => buildUpdateCommandRunner(),
     );
-    const before = snapshotTree(state.install);
-    const refused = new Error("refuse after effective-environment transport");
-    const admission = vi.fn(async (target) => {
-      expect(target).toEqual(targetDescriptor(state.target));
-      throw refused;
-    });
-    const result = updateGitCheckout({
-      gitRoot: state.install,
-      ...captured,
-      timeoutMs: 15_000,
-      startedAt: Date.now(),
-      opts: {
-        channel: "stable",
-        inspectGitTarget: admission,
-        validateCandidate: forbidden("validate a candidate"),
-        beforeGitMutation: forbidden("mutate the installed checkout"),
-        runGitDoctor: forbidden("run Doctor"),
-      },
-    });
-    if (configured) {
-      await expect(result).rejects.toBe(refused);
-      expect(admission).toHaveBeenCalledOnce();
-    } else {
-      await expect(result).resolves.toMatchObject({ status: "error", reason: "fetch-failed" });
-      expect(admission).not.toHaveBeenCalled();
-    }
-    expect(snapshotTree(state.install)).toEqual(before);
+    await expectReadOnlyInspection(
+      state,
+      (opts) =>
+        updateGitCheckout({
+          gitRoot: state.install,
+          ...captured,
+          timeoutMs: 15_000,
+          startedAt: Date.now(),
+          opts: { channel: "stable", ...opts },
+        }),
+      configured,
+    );
   },
 );
 
@@ -700,15 +711,7 @@ process.exit(result.status ?? 93);
   expect(state.installedGit("ls-remote", "upstream.with.dots", "refs/heads/main")).toContain(
     state.target,
   );
-  const before = snapshotTree(state.install);
-  const refused = new Error("stop after real SSH transport and target admission");
-  await expect(
-    state.run({
-      inspectGitTarget: async () => {
-        throw refused;
-      },
-    }),
-  ).rejects.toBe(refused);
+  await expectReadOnlyInspection(state);
   const calls = fs
     .readFileSync(transportLog, "utf8")
     .trim()
@@ -716,7 +719,6 @@ process.exit(result.status ?? 93);
     .map((line) => JSON.parse(line));
   expect(calls.length).toBeGreaterThanOrEqual(2);
   expect(calls.every((args) => args[0] === "-P" && args[1] === "22445")).toBe(true);
-  expect(snapshotTree(state.install)).toEqual(before);
 });
 
 it.each([
@@ -729,15 +731,7 @@ it.each([
   }
   // Unchanged content with a stale index stat cache must remain read-only too.
   fs.utimesSync(path.join(state.install, "package.json"), new Date(1000), new Date(1000));
-  const before = snapshotTree(state.install);
-  const refusal = new Error("incompatible database");
-  const inspect = vi.fn(async (target) => {
-    expect(target).toEqual(targetDescriptor(state.target));
-    throw refusal;
-  });
-  await expect(state.run({ inspectGitTarget: inspect })).rejects.toBe(refusal);
-  expect(inspect).toHaveBeenCalledOnce();
-  expect(snapshotTree(state.install)).toEqual(before);
+  await expectReadOnlyInspection(state);
   const mirror = state.calls.find((argv) => argv.includes("init"))?.at(-1);
   expect(mirror).toBeDefined();
   expect(fs.existsSync(mirror!)).toBe(false);

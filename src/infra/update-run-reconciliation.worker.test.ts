@@ -151,14 +151,11 @@ it.each(["history", "reconciliation"] as const)(
         status: "failed",
         reason: "legacy-driver-expired",
       });
+      expect(await run.readAsync()).toEqual(reconciled);
       nativeCalls = sql.count();
     } finally {
       sql.restore();
     }
-    expect(await run.readAsync()).toMatchObject({
-      status: "failed",
-      reason: "legacy-driver-expired",
-    });
     expect(nativeCalls).toBe(0);
   },
 );

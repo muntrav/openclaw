@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -18,7 +19,17 @@ import {
   expectCancelledGitCandidateCleanup,
   type GitUpdateFixture,
 } from "./update-runner-git-candidate.test-support.js";
+import { selectChannelTag } from "./update-runner-git-target.js";
 import type { CommandRunner, UpdateRunnerOptions } from "./update-runner-types.js";
+
+const extendedOnly = ["v2026.9.33", "v2026.9.34", "v2026.9.34-1"];
+it.each([
+  ["stable", extendedOnly, null],
+  ["beta", extendedOnly, null],
+  ["beta", ["v2026.9.34", "v2026.9.33-beta.1", "v2026.9.32"], "v2026.9.33-beta.1"],
+] as const)("selects %s release tag from %j as %s", (channel, tags, expected) => {
+  expect(selectChannelTag(tags, channel)).toBe(expected);
+});
 
 const reply = (code = 0, stderr = "", stdout = "") => ({ code, stderr, stdout });
 const doctorStep = (cwd: string, exitCode = 0) => ({
@@ -161,6 +172,7 @@ describe("Git checkout execution", () => {
   );
 
   it.each([
+    ["refs/heads/main", "refs/remotes/team/fork/main", "team/fork/main"],
     ["refs/heads/main", "refs/status/main", "refs/status/main"],
     ["main", "refs/status/main", "refs/status/main"],
     ["HEAD", "refs/status/main", "refs/status/main"],
@@ -179,12 +191,16 @@ describe("Git checkout execution", () => {
       }
       await git(root, "remote", "rename", "origin", "team/fork");
       await git(root, "config", "remote.team/fork.fetch", "+" + sourceRef + ":" + destination);
-      await git(root, "update-ref", "-d", "refs/remotes/team/fork/main");
-      await git(root, "checkout", "--detach", beforeSha);
-      await git(root, "branch", "-D", "main");
+      if (trackingRef !== "team/fork/main") {
+        await git(root, "update-ref", "-d", "refs/remotes/team/fork/main");
+        await git(root, "checkout", "--detach", beforeSha);
+        await git(root, "branch", "-D", "main");
+      }
       const other = path.join(directory, "other");
-      await git(directory, "clone", "--quiet", remote, other);
-      await git(other, "reset", "--hard", beforeSha);
+      if (trackingRef !== "team/fork/main") {
+        await git(directory, "clone", "--quiet", remote, other);
+        await git(other, "reset", "--hard", beforeSha);
+      }
       await git(root, "remote", "add", "origin", other);
       const savedConfig = await config();
       const result = await update({
@@ -267,27 +283,23 @@ describe("Git checkout execution", () => {
     await expectInstalled(beforeSha, savedConfig);
   });
 
-  it("does not admit cached tracking data excluded from the source fetch", async () => {
-    await advanceRemote();
-    await git(root, "config", "--add", "remote.origin.fetch", "^refs/heads/main");
-    const savedConfig = await config();
-    const result = await update();
-    expect(result).toMatchObject({ status: "error", reason: "fetch-failed" });
-    expect(fixture.stopped).toBe(false);
-    expect(events).toEqual([]);
-    await expectInstalled(beforeSha, savedConfig);
-  });
-
-  it("fails before activation when the authoritative remote is unavailable", async () => {
-    await advanceRemote();
-    await git(root, "remote", "add", "secondary", remote);
-    await git(root, "remote", "set-url", "origin", path.join(directory, "unavailable"));
-    const savedConfig = await config();
-    const result = await update();
-    expect(result).toMatchObject({ status: "error", reason: "fetch-failed" });
-    expect(fixture.stopped).toBe(false);
-    await expectInstalled(beforeSha, savedConfig);
-  });
+  it.each(["excluded", "unavailable"] as const)(
+    "refuses an %s authoritative source before activation",
+    async (source) => {
+      await advanceRemote();
+      if (source === "excluded") {
+        await git(root, "config", "--add", "remote.origin.fetch", "^refs/heads/main");
+      } else {
+        await git(root, "remote", "add", "secondary", remote);
+        await git(root, "remote", "set-url", "origin", path.join(directory, "unavailable"));
+      }
+      const savedConfig = await config();
+      expect(await update()).toMatchObject({ status: "error", reason: "fetch-failed" });
+      expect(fixture.stopped).toBe(false);
+      expect(events).toEqual([]);
+      await expectInstalled(beforeSha, savedConfig);
+    },
+  );
 
   it.each(["exit", "signal"] as const)(
     "settles optional tag discovery after %s",
@@ -655,21 +667,6 @@ describe("Git checkout execution", () => {
     },
   );
 
-  it("detaches the checkout when activating a tracked target", async () => {
-    const targetSha = await advanceRemote();
-    await git(root, "remote", "rename", "origin", "upstream");
-    await git(root, "remote", "add", "origin", path.join(directory, "unavailable"));
-    const result = await update({
-      devTarget: { mode: "tracked", upstreamRef: "upstream/main", upstreamSha: targetSha },
-    });
-    expect(result).toMatchObject({
-      status: "ok",
-      after: { sha: targetSha, upstreamRef: "upstream/main" },
-    });
-    expect(await git(root, "rev-parse", "--abbrev-ref", "HEAD")).toBe("HEAD");
-    await expectRuntime(root, targetSha);
-  });
-
   it.each(["missing", "unrelated"])("refuses a tracked target with %s upstream", async (kind) => {
     const targetSha = await advanceRemote();
     if (kind === "unrelated") {
@@ -684,6 +681,101 @@ describe("Git checkout execution", () => {
     expect(await head()).toBe(beforeSha);
     expect(await git(root, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
   });
+
+  it.each([
+    ["upstream", "origin", true, "stable", "tracked"],
+    ["origin", "fork", false, "stable", "origin fallback"],
+    ["upstream", undefined, false, "stable", "sole remote"],
+    ["upstream", undefined, true, "beta", "extended tags"],
+    ["upstream", undefined, true, "stable", "conflicting refspec"],
+    ["upstream", "fork", false, "stable", "ambiguous"],
+  ] as const)(
+    "refreshes only release tags from %s with fork %s (tracked=%s, channel=%s, %s)",
+    async (releaseRemote, forkRemote, tracked, channel, scenario) => {
+      vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+      vi.stubEnv("GIT_CONFIG_GLOBAL", os.devNull);
+      vi.stubEnv("LC_ALL", "C");
+      await git(remote, "tag", "v2026.9.1");
+      await git(root, "tag", "v2026.9.1");
+      const release = await advanceRemote();
+      await git(root, "fetch", "origin");
+      await git(root, "checkout", "--detach", release);
+      await fixture.writeRuntime(root, release);
+      if (releaseRemote !== "origin") {
+        await git(root, "remote", "rename", "origin", releaseRemote);
+      }
+      await git(root, "tag", "local-only", beforeSha);
+      if (forkRemote) {
+        const fork = path.join(directory, "fork.git");
+        await git(directory, "clone", "--bare", remote, fork);
+        await git(root, "remote", "add", forkRemote, fork);
+      }
+      // The corrected release is already installed; advancing main must not move it.
+      await git(remote, "tag", "-f", "v2026.9.1", release);
+      await git(remote, "commit", "--allow-empty", "-m", "next development commit");
+      if (channel === "beta") {
+        for (const tag of ["v2026.9.33", "v2026.9.34", "v2026.9.34-1"]) {
+          await git(remote, "tag", tag, beforeSha);
+        }
+      }
+      if (!tracked) {
+        await git(root, "config", "--unset", "branch.main.remote");
+      }
+      if (scenario === "conflicting refspec") {
+        await git(root, "branch", "protected", release);
+        await git(root, "config", "remote.upstream.fetch", "refs/heads/main:refs/heads/protected");
+        await git(remote, "reset", "--hard", beforeSha);
+      }
+      await git(root, "config", "fetch.prune", "true");
+      await git(root, "config", "fetch.pruneTags", "true");
+      const fetches: Array<{ code: number | null; refs: string[] }> = [];
+      const execute = runCommand;
+      runCommand = async (argv, options) => {
+        if (argv[0] !== "git") {
+          throw new Error(`Unexpected build command: ${argv[0]}`);
+        }
+        const result = await execute(argv, options);
+        const fetchIndex = argv.indexOf("fetch");
+        if (fetchIndex !== -1) {
+          const refs = [];
+          for (const ref of [
+            "refs/tags/v2026.9.1",
+            "refs/tags/local-only",
+            `refs/remotes/${releaseRemote}/main`,
+          ]) {
+            const read = await execute([...argv.slice(0, fetchIndex), "rev-parse", ref], options);
+            refs.push(read.code === 0 ? read.stdout.trim() : "");
+          }
+          fetches.push({ code: result.code, refs });
+        }
+        return result;
+      };
+      const forbidden = async () => {
+        throw new Error("A refused fetch or current release must not enter candidate activation");
+      };
+      const result = await update({
+        channel,
+        inspectGitTarget: forbidden,
+        validateCandidate: forbidden,
+        beforeGitMutation: forbidden,
+        runGitDoctor: forbidden,
+      });
+      if (scenario === "ambiguous") {
+        expect(result).toMatchObject({ status: "error", reason: "fetch-failed" });
+        expect(result.steps.at(-1)?.stderrTail).toContain("Set branch.main.remote");
+        expect(fetches).toEqual([]);
+      } else {
+        expect(result).toMatchObject({ status: "skipped", reason: "already-current" });
+        expect(fetches).toEqual([{ code: 0, refs: [release, beforeSha, release] }]);
+      }
+      if (scenario === "conflicting refspec") {
+        expect(await git(root, "rev-parse", "protected")).toBe(release);
+      }
+      expect(await git(root, "rev-parse", "v2026.9.1", "local-only", "HEAD")).toBe(
+        [beforeSha, beforeSha, release].join("\n"),
+      );
+    },
+  );
 
   it.each([
     "doctor-failed",

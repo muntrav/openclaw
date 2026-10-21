@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runPackageUpdateDoctor } from "../cli/update-cli/update-command-package.js";
 import * as processExec from "../process/exec.js";
 import { runCommandWithTimeout } from "../process/exec.js";
@@ -32,34 +32,24 @@ import { registerGitActivationDoctorOutcomeTests } from "./update-runner-git-tra
 import type { CommandRunner, UpdateRunnerOptions } from "./update-runner-types.js";
 
 describe("Git candidate activation", () => {
+  const directories = useAutoCleanupTempDirTracker(afterEach);
   const packageMetadata = { openclaw: { schemaVersions: { state: 5, agent: 14 } } };
   let directory: string;
   let root: string;
   let remote: string;
   let state: GitUpdateFixture;
   let inspectedTargets: string[];
-  let inspectionRoots: string[];
-
-  const writeCheckoutRuntime = (
-    checkout = root,
-    sha = state.beforeSha,
-    layout = state.virtualStoreLayout,
-  ) => state.writeRuntime(checkout, sha, layout);
 
   beforeEach(async () => {
-    directory = await fs.realpath(
-      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-git-candidate-")),
-    );
+    directory = await fs.realpath(directories.make("openclaw-git-candidate-"));
     state = await createGitUpdateFixture(directory, packageMetadata);
     ({ root, remote } = state);
     inspectedTargets = [];
-    inspectionRoots = state.inspectionRoots;
   });
 
   afterEach(async () => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
-    await fs.rm(directory, { recursive: true, force: true });
   });
 
   const advanceRemote = () => state.advanceRemote();
@@ -118,7 +108,8 @@ describe("Git candidate activation", () => {
     });
   }
 
-  const expectNoRuntimeStagingPaths = () => expectNoGitRuntimeStagingPaths(root, inspectionRoots);
+  const expectNoRuntimeStagingPaths = () =>
+    expectNoGitRuntimeStagingPaths(root, state.inspectionRoots);
   const writeFiles = (files: Record<string, string>, checkout = root) =>
     writeFixtureTree(checkout, files);
   async function commitFiles(files: Record<string, string>, checkout = root) {
@@ -131,36 +122,37 @@ describe("Git candidate activation", () => {
     await expectHead(root, sha);
     await expectRuntime(root, sha);
   }
+  async function expectOriginalServing() {
+    expect(state.stopped).toBe(false);
+    await expectInstalled(state.beforeSha);
+    await expectNoRuntimeStagingPaths();
+  }
 
   it("separates work deadlines from observation budgets", async () => {
-    const timeoutMs = undefined;
     await advanceRemote();
     const commands: Array<{ argv: string[]; timeoutMs: number | undefined }> = [];
     const doctorCommands = vi.spyOn(processExec, "runCommandWithTimeout");
     observeCommands((argv, options) => {
       commands.push({ argv, timeoutMs: options.timeoutMs });
     });
-    expect((await update({ timeoutMs })).status).toBe("ok");
+    expect((await update()).status).toBe("ok");
     const doctorOptions = doctorCommands.mock.calls.find(([argv]) => argv.includes("doctor"))?.[1];
     expect(doctorOptions).toBeDefined();
-    expect(typeof doctorOptions === "number" ? doctorOptions : doctorOptions?.timeoutMs).toBe(
-      timeoutMs,
-    );
+    expect(
+      typeof doctorOptions === "number" ? doctorOptions : doctorOptions?.timeoutMs,
+    ).toBeUndefined();
     for (const [names, budget] of [
-      [["install", "build", "fetch", "checkout"], timeoutMs],
-      [["--version", "rev-parse", "status"], 5_000],
+      [["install", "build", "fetch", "checkout"], undefined],
+      [["--version", "rev-parse", "status", "remove"], 5_000],
     ] as const) {
       for (const name of names) {
         expect(
           commands.find(({ argv }) => argv.includes(name)),
           name,
-        ).toMatchObject({
-          timeoutMs: budget,
-        });
+        ).toMatchObject({ timeoutMs: budget });
       }
     }
-    expect(commands.find(({ argv }) => argv.includes("remove"))?.timeoutMs).toBe(5_000);
-    expect(inspectionRoots).not.toHaveLength(0);
+    expect(state.inspectionRoots).not.toHaveLength(0);
     await expectNoRuntimeStagingPaths();
   });
 
@@ -177,11 +169,11 @@ describe("Git candidate activation", () => {
     expect(result.status).toBe("ok");
     const names = result.steps.map((step) => step.name);
     expect(result.steps).toContainEqual(cleanup);
-    expect(names.indexOf("candidate-state-cleanup")).toBeGreaterThanOrEqual(0);
     expect(names.indexOf("candidate-state-cleanup")).toBeLessThan(
       names.indexOf("preflight-update-clean-check"),
     );
-    expect(result.steps.find((step) => step.name === "git-runtime-activation")).toMatchObject({
+    expectStep(result.steps, {
+      name: "git-runtime-activation",
       exitCode: 0,
       durationMs: expect.any(Number),
     });
@@ -202,48 +194,6 @@ describe("Git candidate activation", () => {
     },
   });
   registerGitActivationDoctorOutcomeTests(fixture);
-
-  it("rebuilds a source-current checkout before activating its stale runtime", async () => {
-    const builtSha = state.beforeSha;
-    const target = await advanceRemote();
-    await git(remote, "tag", "v2026.9.1");
-    await git(root, "pull", "--ff-only");
-    state.beforeSha = target;
-    const buildInfoPath = path.join(root, "dist", "build-info.json");
-    await fs.writeFile(buildInfoPath, JSON.stringify({ buildId: builtSha }));
-    await expectRuntime(root, builtSha);
-
-    const result = await update({
-      beforeGitMutation: async () => {
-        expect(state.stopped).toBe(false);
-        await expectRuntime(root, builtSha);
-        state.stopped = true;
-        state.events.push("stop");
-      },
-    });
-
-    expect(result).toMatchObject({
-      status: "ok",
-      before: { sha: target, buildId: builtSha },
-      after: { sha: target, buildId: target },
-    });
-    expect(state.events).toEqual(["build", "validate", "stop", "migrate"]);
-    await expectRuntime(root, target);
-    expect(JSON.parse(await readText(buildInfoPath))).toMatchObject({ commit: target });
-
-    state.stopped = false;
-    state.events.length = 0;
-    expect(await update()).toMatchObject({
-      status: "skipped",
-      reason: "already-current",
-      before: { sha: target, buildId: target },
-    });
-    expect({ stopped: state.stopped, events: state.events }).toEqual({
-      stopped: false,
-      events: [],
-    });
-    await expectNoRuntimeStagingPaths();
-  });
 
   it("keeps build and exposure source selection in the admitted candidate", async () => {
     vi.stubEnv("OPENCLAW_DEV_SOURCE_ROOT", root);
@@ -295,7 +245,7 @@ describe("Git candidate activation", () => {
     await git(root, "add", "package.json");
     await git(root, "commit", "-m", "local change");
     state.beforeSha = await git(root, "rev-parse", "HEAD");
-    await writeCheckoutRuntime();
+    await state.writeRuntime();
 
     const olderCandidate = await advanceRemote();
     const latestCandidate = await commitFiles({ "latest.txt": "latest\n" }, remote);
@@ -332,11 +282,8 @@ describe("Git candidate activation", () => {
       expect(output).toContain(nodeRuntime.version);
     }
     expect(packageManagerCommands).toEqual([]);
-    expect({ stopped: state.stopped, events: state.events }).toEqual({
-      stopped: false,
-      events: [],
-    });
-    await expectInstalled(state.beforeSha);
+    expect(state.events).toEqual([]);
+    await expectOriginalServing();
   });
 
   it.each(["untracked", "head", "branch"] as const)(
@@ -401,7 +348,7 @@ describe("Git candidate activation", () => {
       await git(root, "fetch", "origin");
       await git(root, "merge", "--ff-only", "origin/main");
       state.beforeSha = await git(root, "rev-parse", "HEAD");
-      await writeCheckoutRuntime(root, state.beforeSha, operatorStore);
+      await state.writeRuntime(root, state.beforeSha, operatorStore);
       const target = await advanceRemote();
       for (const key of [
         "npm_config_virtual_store_dir",
@@ -439,7 +386,7 @@ describe("Git candidate activation", () => {
         const store = path.resolve(cwd, selected ?? "node_modules/.pnpm");
         // Model pruning the previous package generation, as the real pnpm proof does.
         await fs.rm(path.join(store, state.beforeSha), { recursive: true, force: true });
-        await writeCheckoutRuntime(cwd, await git(cwd, "rev-parse", "HEAD"), store);
+        await state.writeRuntime(cwd, await git(cwd, "rev-parse", "HEAD"), store);
         if (argv[1] === "build") {
           await fs.rm(path.join(cwd, "dist", "control-ui", "index.html"));
           if (dirtyWorkspace) {
@@ -485,15 +432,12 @@ describe("Git candidate activation", () => {
           stdoutTail: expect.stringContaining("pnpm-workspace.yaml"),
         });
         expect(state.events).toEqual(candidateEvents);
-        expect(state.stopped).toBe(false);
-        await expectHead(root, state.beforeSha);
-        await expectRuntime(root, state.beforeSha);
+        await expectOriginalServing();
         return;
       }
       expect(result.status, JSON.stringify(result)).toBe("ok");
       expect(state.events).toEqual([...candidateEvents, "stop"]);
-      await expectHead(root, target);
-      await expectRuntime(root, target);
+      await expectInstalled(target);
       const manifest = YAML.parse(await readText(path.join(root, "node_modules", ".modules.yaml")));
       expect(path.resolve(root, "node_modules", manifest.virtualStoreDir)).toBe(
         path.join(root, "node_modules", ".pnpm"),
@@ -501,20 +445,38 @@ describe("Git candidate activation", () => {
     },
   );
 
-  it.each(["cache/deps", "../store", "external", "symlink"] as const)(
-    "activates the validated %s runtime",
+  it.each(["cache/deps", "../store", "external", "symlink", "source-current"] as const)(
+    "activates the validated runtime from %s",
     async (layout) => {
-      state.virtualStoreLayout = layout;
-      await writeCheckoutRuntime(root, state.beforeSha, layout);
+      const stale = layout === "source-current";
+      const builtSha = state.beforeSha;
+      state.virtualStoreLayout = stale ? "node_modules/.pnpm" : layout;
+      await state.writeRuntime();
       const target = await advanceRemote();
+      if (stale) {
+        await git(remote, "tag", "v2026.9.1");
+        await git(root, "pull", "--ff-only");
+        state.beforeSha = target;
+        await fs.writeFile(
+          path.join(root, "dist/build-info.json"),
+          JSON.stringify({ buildId: builtSha }),
+        );
+        await expectRuntime(root, builtSha);
+      }
       const unrelated = path.join(root, "operator-project", "node_modules", "keep.cjs");
       await writeFiles({ "operator-project/node_modules/keep.cjs": "operator-owned" });
-      const result = await update();
+      const result = await update({
+        beforeGitMutation: async (candidate) => {
+          expect(inspectedTargets).toContain(candidate.sha);
+          await expectRuntime(root, builtSha);
+          await state.beforeGitMutation();
+        },
+      });
       await expectFile(unrelated, "operator-owned");
       expect(result.status, JSON.stringify(result)).toBe("ok");
       expect(state.events).toEqual(["build", "validate", "stop", "migrate"]);
       const current = await git(root, "rev-parse", "HEAD");
-      expect(result.before?.buildId).toBe(state.beforeSha);
+      expect(result.before).toMatchObject({ sha: state.beforeSha, buildId: builtSha });
       expect(result.after).toMatchObject({ sha: current, buildId: current });
       expect(result.gitRuntime).toEqual({
         commit: current,
@@ -531,7 +493,7 @@ describe("Git candidate activation", () => {
           ? path.join(directory, "shared-store", "virtual-store")
           : layout === "symlink"
             ? path.join(directory, "shared-store", "linked-store", current)
-            : path.resolve(root, layout);
+            : path.resolve(root, state.virtualStoreLayout);
       expect(await fs.realpath(path.resolve(root, "node_modules", manifest.virtualStoreDir))).toBe(
         expectedStore,
       );
@@ -547,6 +509,18 @@ describe("Git candidate activation", () => {
           return [];
         });
       expect(retainedArtifacts).toEqual([]);
+      if (stale) {
+        expect(current).toBe(target);
+        state.stopped = false;
+        state.events.length = 0;
+        expect(await update()).toMatchObject({
+          status: "skipped",
+          reason: "already-current",
+          before: { sha: target, buildId: target },
+        });
+        expect(state.events).toEqual([]);
+        await expectOriginalServing();
+      }
     },
   );
 
@@ -567,7 +541,7 @@ describe("Git candidate activation", () => {
   it("preserves required signatures when a candidate rebase fails", async () => {
     await advanceRemote();
     state.beforeSha = await commitFiles({ "local.txt": "operator change\n" });
-    await writeCheckoutRuntime();
+    await state.writeRuntime();
     // A deliberately non-signing executable rejects Git's signing request without a key.
     await git(root, "config", "gpg.program", process.execPath);
     await git(root, "config", "commit.gpgSign", "true");
@@ -609,10 +583,8 @@ describe("Git candidate activation", () => {
         .map(([step]) => step.exitCode),
     ).toEqual([0]);
     expect(result).toMatchObject({ status: "error", reason: "preflight-no-good-commit" });
-    expect(state.stopped).toBe(false);
-    await expectHead(root, state.beforeSha);
+    await expectOriginalServing();
     await expectFile(path.join(root, "openclaw.mjs"), "export {};\n");
-    await expectNoRuntimeStagingPaths();
   });
 
   it.each([
@@ -629,7 +601,7 @@ describe("Git candidate activation", () => {
         ({ beforeSha: state.beforeSha, asset: trackedAsset } =
           await prepareDeletedTrackedRuntimeAsset(remote, root));
       }
-      await writeCheckoutRuntime();
+      await state.writeRuntime();
       const originalCache = path.join(root, "node_modules", ".cache", "jiti", "original.cjs");
       await writeFiles({ "node_modules/.cache/jiti/original.cjs": "original runtime cache" });
       const candidateSha = await advanceRemote();
@@ -857,12 +829,7 @@ describe("Git candidate activation", () => {
           buildId: state.beforeSha,
         });
       }
-      expect(state.stopped).toBe(false);
-      await expectHead(root, state.beforeSha);
-      expect(await readText(path.join(root, "node_modules", "identity.cjs"))).toContain(
-        state.beforeSha,
-      );
-      await expectNoRuntimeStagingPaths();
+      await expectOriginalServing();
     },
   );
 });
