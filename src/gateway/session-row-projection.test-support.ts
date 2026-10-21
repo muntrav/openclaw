@@ -13,6 +13,15 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../routing/session-key.js";
+import {
+  withOpenClawTestState,
+  type OpenClawTestState,
+} from "../test-utils/openclaw-test-state.js";
+import type {
+  GatewayRequestHandler,
+  GatewayRequestHandlerOptions,
+} from "./server-methods/types.js";
+import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import {
   create as createSessionRow,
@@ -38,6 +47,51 @@ import {
 import type { SessionTitleFields } from "./session-utils.types.js";
 
 type Row = NonNullable<ReturnType<SessionRowProjection["describe"]>>;
+
+export function withSessionRowProjectionState(
+  run: (
+    create: typeof createSessionRowProjection,
+    state: OpenClawTestState,
+    cleanup: AsyncDisposableStack,
+  ) => Promise<void>,
+  foreground = false,
+  options: Parameters<typeof withOpenClawTestState>[0] = { scenario: "minimal" },
+) {
+  return withOpenClawTestState(options, async (state) => {
+    await using cleanup = new AsyncDisposableStack();
+    if (foreground) {
+      cleanup.defer(retainSessionListForegroundWork());
+    }
+    await run(
+      async (params) => {
+        const projection = await createSessionRowProjection(params);
+        cleanup.defer(() => projection.dispose());
+        return projection;
+      },
+      state,
+      cleanup,
+    );
+  });
+}
+
+export function requestSessionRow(
+  handler: GatewayRequestHandler,
+  context: GatewayRequestHandlerOptions["context"],
+  method: string,
+  params: GatewayRequestHandlerOptions["params"],
+  respond: GatewayRequestHandlerOptions["respond"],
+  client: GatewayRequestHandlerOptions["client"] = null,
+  id = method,
+) {
+  return handler({
+    req: { type: "req", id, method },
+    params,
+    context,
+    respond,
+    client,
+    isWebchatConnect: () => false,
+  });
+}
 
 /** Synthetic owner state; tests publish changes explicitly through setEntry. */
 export function createSessionRowProjectionFixture(params: {

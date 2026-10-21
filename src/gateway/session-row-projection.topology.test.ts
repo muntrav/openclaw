@@ -186,7 +186,13 @@ it("reconciles a resident reset while a topology store snapshot awaits its worke
         previous: { sessionId: entry.sessionId, sessionKeys: [scope.sessionKey] },
         current: { sessionId: entry.sessionId, sessionKeys: [scope.sessionKey] },
       });
-      expect(projection.capture(query)?.entry).toBeUndefined();
+      const invalidated = projection.capture(query);
+      expect([
+        invalidated?.entry,
+        invalidated?.storedEntry,
+        invalidated?.retainedDatabaseFacts,
+        invalidated?.pendingDatabaseFacts,
+      ]).toEqual([undefined, undefined, undefined, undefined]);
       expect(projection.isCurrent(captured!)).toBe(false);
       release.resolve();
       await pending;
