@@ -1,5 +1,5 @@
 import { For, Show, createMemo, createSignal, onSettled } from "solid-js";
-import type { AgentSummary } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
+import type { AgentSummary } from "../../api/types.ts";
 import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import type { ApplicationContext } from "../../app/context-types.ts";
 import { projectGateway } from "../../lib/reactive/application.ts";
