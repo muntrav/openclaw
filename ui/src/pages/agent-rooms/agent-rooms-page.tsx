@@ -1,8 +1,7 @@
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
-import type { AgentSummary } from "../../api/types.ts";
+import { For, Show, createMemo, createSignal, onSettled } from "solid-js";
+import type { AgentSummary } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import type { ApplicationContext } from "../../app/context-types.ts";
-import { buildAgentMainSessionKey } from "../../lib/sessions/session-key.ts";
 import { projectGateway } from "../../lib/reactive/application.ts";
 import { useApplication } from "../../lib/reactive/context.ts";
 import { projectAgents } from "../../lib/reactive/domain-capabilities.ts";
@@ -98,7 +97,7 @@ export function AgentRoomsPage() {
     return snapshot.phase === "connected" ? snapshot.client : null;
   });
 
-  onMount(() => {
+  onSettled(() => {
     setMessages(readRoomMessages());
     void context.agents
       .ensureList()
