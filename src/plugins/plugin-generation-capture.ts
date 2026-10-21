@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { isBuiltin } from "node:module";
 import path from "node:path";
@@ -8,6 +7,7 @@ import { createPluginCaptureResolver } from "./plugin-capture-resolution.js";
 import {
   createPluginGenerationFileCapture,
   createPluginSourceLinkCapture,
+  linkPluginGenerationDependency,
 } from "./plugin-generation-file-capture.js";
 import { createPluginGenerationReceipt } from "./plugin-generation-receipt.js";
 import {
@@ -18,6 +18,7 @@ import {
   type PluginSourceCustodyFork,
   createPluginGenerationModuleLookup,
 } from "./plugin-generation-source-lookup.js";
+import { PluginDependencyLinkError } from "./plugin-instance-error.js";
 import {
   createPluginNativeAdmission,
   type PluginNativeRecovery,
@@ -248,30 +249,20 @@ function createPluginGenerationArtifact(
           ? path.dirname(moduleRoot)
           : destination;
       const link = path.join(lookupDirectory, "node_modules", name);
-      packages.get(dependency.root)!.links.add(link);
+      const dependencyPackage = packages.get(dependency.root)!;
+      dependencyPackage.links.add(link);
       try {
-        const linkStat = fs.lstatSync(link, { throwIfNoEntry: false });
-        const previous = linkStat?.isSymbolicLink() && fs.readlinkSync(link);
-        // copyPackage has already materialized the intended target.
-        const sameTarget = previous && path.resolve(path.dirname(link), previous) === captured;
-        if (linkStat && (!previous || sameTarget)) {
-          return;
-        }
-        fs.mkdirSync(path.dirname(link), { recursive: true, mode: 0o700 });
-        // Stage replacements so failures leave the original junction intact.
-        const staged = `${link}.${randomUUID()}.tmp`;
-        try {
-          fs.symlinkSync(path.relative(path.dirname(link), captured), staged, "junction");
-          fs.renameSync(staged, link);
+        if (linkPluginGenerationDependency(link, captured)) {
           additions.add(link);
-        } finally {
-          fs.rmSync(staged, { force: true });
         }
-        if (linkStat) {
-          process.emitWarning(`Replacing plugin dependency link ${link}`);
-        }
-      } catch (error) {
-        process.emitWarning(`Could not prepare plugin dependency link ${link}: ${String(error)}`);
+      } catch (cause) {
+        const error = new PluginDependencyLinkError(
+          `Cannot prepare dependency ${name} for plugin ${rootDir}; check filesystem permissions and retry.`,
+          { cause },
+        );
+        dependencyPackage.state = { error };
+        additions.add(link);
+        throw error;
       }
     };
     const scopes = metadataCapture.createScope({

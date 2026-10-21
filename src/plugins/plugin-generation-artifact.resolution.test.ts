@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { withMockedPlatform } from "../test-utils/vitest-spies.js";
 import * as jitiFactory from "./jiti-factory.js";
 import { createPluginCaptureResolver } from "./plugin-capture-resolution.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
@@ -124,7 +125,7 @@ function fixture(resources: ReturnType<typeof captureResources>) {
 }
 
 it.each(["relative symlink", "absolute junction"])(
-  "atomically repairs a dangling %s before loading captured dependencies",
+  "repairs a dangling %s before loading captured dependencies",
   async (layout) => {
     await using resources = captureResources();
     const { artifact, entry, link, root } = fixture(resources);
@@ -152,7 +153,7 @@ it.each(["relative symlink", "absolute junction"])(
 
     const additions = artifact.prepareDependency(entry, "dependency");
     expect(additions).toContain(link);
-    expect(publishedAtomically).toBe(true);
+    expect(publishedAtomically).toBe(process.platform !== "win32");
     expect(createRequire(entry)("dependency")).toBe("captured dependency");
     expect(warning).toHaveBeenCalledWith(expect.stringContaining("Replacing"));
     artifact.prepareNativeScopes(entry);
@@ -195,24 +196,63 @@ it("preserves a real dependency directory", async () => {
   expect(warning).not.toHaveBeenCalled();
 });
 
-it("warns on a failed link replacement and still prepares sibling dependencies", async () => {
+it.each(["EPERM", "EISDIR"])(
+  "repairs Windows junctions when rename cannot replace directories (%s)",
+  async (code) => {
+    await using resources = captureResources();
+    const { artifact, entry, link, root } = fixture(resources);
+    artifact.prepareDependency(entry, "dependency");
+    artifact.prepareDependency(entry, "sibling");
+    const target = fs.realpathSync(link);
+    fs.unlinkSync(link);
+    fs.symlinkSync(path.join(root, "disposed-capture"), link, "junction");
+    const rename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (to === link && fs.lstatSync(link, { throwIfNoEntry: false })) {
+        throw Object.assign(new Error("cannot replace a directory junction"), { code });
+      }
+      rename(from, to);
+    });
+    const symlink = fs.symlinkSync;
+    let recreated = false;
+    vi.spyOn(fs, "symlinkSync").mockImplementation((destination, filename, type) => {
+      if (filename === link) {
+        expect(fs.lstatSync(link, { throwIfNoEntry: false })).toBeUndefined();
+        recreated = true;
+      }
+      symlink(destination, filename, type);
+    });
+    vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+
+    withMockedPlatform("win32", () => artifact.prepareNativeScopes(entry));
+    expect(recreated).toBe(true);
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(link)).toBe(target);
+    expect(createRequire(entry)("dependency")).toBe("captured dependency");
+  },
+);
+
+it("marks a capture unprepared after dependency link creation fails", async () => {
   await using resources = captureResources();
   const { artifact, entry, link, root } = fixture(resources);
   fs.symlinkSync(path.join(root, "disposed-capture"), link, "junction");
-  const original = fs.readlinkSync(link);
-  const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
-  const rename = fs.renameSync;
-  vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-    if (to === link) {
-      throw Object.assign(new Error("junction is busy"), { code: "EPERM" });
+  const symlink = fs.symlinkSync;
+  const failure = vi.spyOn(fs, "symlinkSync").mockImplementation((destination, filename, type) => {
+    if (String(filename).startsWith(link)) {
+      throw Object.assign(new Error("dependency link permission denied"), { code: "EACCES" });
     }
-    rename(from, to);
+    symlink(destination, filename, type);
   });
 
-  expect(() => artifact.prepareDependency(entry, "dependency")).not.toThrow();
-  expect(fs.readlinkSync(link)).toBe(original);
+  expect(() => artifact.prepareDependency(entry, "dependency")).toThrowError(
+    /Cannot prepare dependency dependency for plugin/,
+  );
+  expect(() => artifact.assertModuleAvailable(link)).toThrowError(
+    /Cannot prepare dependency dependency for plugin/,
+  );
+  failure.mockRestore();
+  expect(() => artifact.prepareDependency(entry, "dependency")).toThrowError(
+    /Cannot prepare dependency dependency for plugin/,
+  );
   expect(fs.readdirSync(path.dirname(link))).toEqual(["dependency"]);
-  expect(warning).toHaveBeenCalledWith(expect.stringContaining("junction is busy"));
-  artifact.prepareDependency(entry, "sibling");
-  expect(createRequire(entry)("sibling")).toBe("unaffected sibling");
 });

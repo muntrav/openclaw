@@ -145,9 +145,10 @@ and recovery or migration backups remain with their existing durable owners;
 installation and state filesystems.
 
 Plugin source capture repairs stale dependency links without changing real
-dependency directories. Replacement links are staged before publication so a
-failed replacement preserves the previous link. A link pointing elsewhere or a
-filesystem failure produces a warning; other dependencies can still be prepared.
+dependency directories. POSIX replacements are staged before publication;
+Windows removes only the junction or symlink before recreating and verifying it.
+A failed link leaves that plugin unprepared with a named error. Doctor retains
+its pending migration obligation while other plugins' migrations continue.
 This repair applies when the candidate loads plugin contracts during Doctor.
 
 ### Migration integrity checks
