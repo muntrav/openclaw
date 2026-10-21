@@ -964,3 +964,61 @@ it.each<[(typeof errors)[keyof typeof errors], string, RejectedInstall]>([
     expectUnused(mocks.download, mocks.installArchive, mocks.cleanup);
   },
 );
+
+it.each([
+  { baseUrl: "https://clawhub.ai", blocked: false },
+  { baseUrl: "https://mirror.example.test", blocked: true },
+])("binds official archive hook bypass to the registry $baseUrl", async ({ baseUrl, blocked }) => {
+  mocks.parseSpec.mockReturnValueOnce({ name: "demo", version: "2026.3.22" });
+  const archive = await mockArchive({ entries: DEMO_PLUGIN_ARCHIVE_ENTRIES });
+  const extensionsDir = await useRealInstaller(archive.archivePath);
+  mockPackage({ verification: { tier: "source-linked", sourceRepo: "openclaw/openclaw" } });
+  const { createHookRunner } = await import("./hooks.js");
+  const { createMockPluginRegistry } = await import("./hooks.test-helpers.js");
+  const hookRunnerGlobal = await import("./hook-runner-global.js");
+  const rejectInstall = vi.fn().mockReturnValue({
+    block: true,
+    blockReason: "registry policy rejected fixture",
+  });
+  const hookRunner = createHookRunner(
+    createMockPluginRegistry([
+      { pluginId: "registry-policy", hookName: "before_install", handler: rejectInstall },
+    ]),
+  );
+  const archiveApi = await import("../infra/archive.js");
+  vi.spyOn(hookRunnerGlobal, "getGlobalHookRunner").mockReturnValue(hookRunner);
+  const extraction = vi.spyOn(archiveApi, "extractArchive");
+  const artifactReview = vi.fn();
+  const result = await installPluginFromClawHub({
+    spec: "clawhub:demo@2026.3.22",
+    baseUrl,
+    config: {},
+    extensionsDir,
+    env: { OPENCLAW_COMPATIBILITY_HOST_VERSION: "2026.3.22" },
+    onInstallPolicyWarning: async () => ({ status: "approved" }),
+    onBeforePluginArtifactCommit: artifactReview,
+  });
+  expect(mocks.fetchDetail).toHaveBeenCalledWith(expect.objectContaining({ baseUrl }));
+  expect(mocks.download).toHaveBeenCalledWith(expect.objectContaining({ baseUrl }));
+  expect(extraction).toHaveBeenCalledOnce();
+  expect(mocks.cleanup).toHaveBeenCalledOnce();
+  if (blocked) {
+    expect(result).toMatchObject({
+      ok: false,
+      code: "security_scan_blocked",
+      error: expect.stringContaining("registry policy rejected fixture"),
+    });
+    expect(rejectInstall).toHaveBeenCalledOnce();
+    expect(artifactReview).not.toHaveBeenCalled();
+    await expect(fs.stat(path.join(extensionsDir, "demo"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  } else {
+    expect(result).toMatchObject({ ok: true, pluginId: "demo" });
+    expect(rejectInstall).not.toHaveBeenCalled();
+    expect(artifactReview).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(extensionsDir, "demo", "index.js"), "utf8")).toBe(
+      DEMO_PLUGIN_ARCHIVE_ENTRIES["index.js"],
+    );
+  }
+});
