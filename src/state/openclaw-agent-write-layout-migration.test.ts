@@ -9,15 +9,11 @@ import {
 } from "./openclaw-agent-db-contract.js";
 import { withAgentDatabaseMaintenanceLease as withLease } from "./openclaw-agent-db-maintenance-lease.js";
 import { getOpenClawAgentMigrationSchema } from "./openclaw-agent-db-schema-helpers.js";
-import {
-  ensureOpenClawAgentDatabaseSchema as ensureSchema,
-  ensureOpenClawAgentSchema as migrateSchema,
-} from "./openclaw-agent-db-schema.js";
+import { ensureOpenClawAgentDatabaseSchema as ensureSchema } from "./openclaw-agent-db-schema.js";
 import { assertOpenClawMigrationWitnessPreserved as assertWitnessPreserved } from "./openclaw-migration-witness.js";
 import {
   agentWitness,
-  migrateWithOutcome,
-  restoreScopedMigration,
+  migrationFixture,
   row,
   rows,
   seedVersion,
@@ -36,6 +32,7 @@ const scope = [
   "sqlite_stat4",
   "transcript_event_identities",
 ];
+const withFixture = migrationFixture({ seed, predecessor: 27, target: TARGET_VERSION, scope });
 function capture(database: DatabaseSync, withOrigins = true) {
   return {
     identities: rows(database, "SELECT * FROM transcript_event_identities ORDER BY seq"),
@@ -140,10 +137,7 @@ it.each([undefined, "full"] as const)(
 it.each(["commit", "without-origins", "rollback"] as const)(
   "preserves rows, undeclared tables and atomic version publication (%s)",
   async (outcome) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const pathname = state.path("write-layout.sqlite");
-      using database = new DatabaseSync(pathname);
-      seed(database);
+    await withFixture("write-layout.sqlite", async ({ database, migrate }) => {
       if (outcome === "without-origins") {
         database.exec("DROP TABLE memory_entry_origins");
       }
@@ -167,17 +161,7 @@ it.each(["commit", "without-origins", "rollback"] as const)(
         database.exec("ROLLBACK TO physical_identity; RELEASE physical_identity");
       }
       const before = capture(database, outcome !== "without-origins");
-      await migrateWithOutcome(
-        {
-          database,
-          pathname,
-          env: state.env,
-          scope,
-          migrate: () => migrateSchema(database, "main", pathname, TARGET_VERSION),
-        },
-        outcome,
-        TARGET_VERSION,
-      );
+      await migrate(outcome);
       if (originalWitness) {
         expect(assertWitnessPreserved(originalWitness, captureWitness())).toEqual({
           warnings: [],
@@ -244,21 +228,11 @@ it.each(["commit", "without-origins", "rollback"] as const)(
 );
 
 it("restores the scoped pre-upgrade layout without overwriting later unrelated writes", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const pathname = state.statePath("write-layout-restore.sqlite");
-    using database = new DatabaseSync(pathname);
-    seed(database);
-    await restoreScopedMigration(
-      {
-        database,
-        pathname,
-        env: state.env,
-        scope,
-        migrate: () => migrateSchema(database, "main", pathname, TARGET_VERSION),
-      },
-      27,
-      TARGET_VERSION,
-      () => capture(database),
-    );
-  });
+  await withFixture(
+    "write-layout-restore.sqlite",
+    async ({ database, restore }) => {
+      await restore(() => capture(database));
+    },
+    "state",
+  );
 });

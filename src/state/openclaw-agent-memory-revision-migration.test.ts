@@ -1,14 +1,11 @@
 import fs from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { extractSqliteTableSchema } from "../infra/sqlite-schema-sql.js";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { ensureOpenClawAgentDatabaseSchema } from "./openclaw-agent-db-schema.js";
 import { assertOpenClawMigrationWitnessPreserved as assertWitnessPreserved } from "./openclaw-migration-witness.js";
 import {
   agentWitness as captureWitness,
-  migrateWithOutcome,
-  restoreScopedMigration,
+  migrationFixture,
   row,
   rows,
   seedVersion,
@@ -18,9 +15,7 @@ const predecessor = 30;
 const target = 31;
 const scope = ["memory_index_chunks", "memory_index_sources", "schema_meta"];
 
-function migrate(database: DatabaseSync, pathname: string, env: NodeJS.ProcessEnv) {
-  ensureOpenClawAgentDatabaseSchema(database, { agentId: "main", env, path: pathname });
-}
+const withFixture = migrationFixture({ seed, predecessor, target, scope, admission: true });
 // Frozen schema plus the previously published bundle DDL, independent of the new migration.
 const schemaV27 = fs.readFileSync(
   new URL("../../test/fixtures/sqlite/openclaw-agent-schema-v27.sql", import.meta.url),
@@ -86,62 +81,43 @@ function retained(database: DatabaseSync) {
 it.each(["commit", "rollback"] as const)(
   "preserves rows, sibling tables and atomic schema publication (%s)",
   async (outcome) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const pathname = state.statePath("memory-revision.sqlite");
-      using database = new DatabaseSync(pathname);
-      seed(database);
-      const before = retained(database);
-      const witness = captureWitness(database);
-      expect(before.layout.filter((entry) => entry.type === "trigger")).toHaveLength(6);
-      await migrateWithOutcome(
-        {
-          database,
-          pathname,
-          env: state.env,
-          scope,
-          migrate: () => migrate(database, pathname, state.env),
-        },
-        outcome,
-        target,
-      );
-      expect(assertWitnessPreserved(witness, captureWitness(database))).toEqual({
-        warnings: [],
-      });
-      const expectedVersion = outcome === "rollback" ? predecessor : target;
-      expect(retained(database)).toEqual({
-        ...before,
-        userVersion: expectedVersion,
-        schemaVersion: expectedVersion,
-        layout:
-          outcome === "rollback"
-            ? before.layout
-            : before.layout.filter((entry) => entry.type !== "trigger"),
-      });
-      expect(rows(database, "PRAGMA foreign_key_check")).toEqual([]);
-    });
+    await withFixture(
+      "memory-revision.sqlite",
+      async ({ database, migrate }) => {
+        const before = retained(database);
+        const witness = captureWitness(database);
+        expect(before.layout.filter((entry) => entry.type === "trigger")).toHaveLength(6);
+        await migrate(outcome);
+        expect(assertWitnessPreserved(witness, captureWitness(database))).toEqual({
+          warnings: [],
+        });
+        const expectedVersion = outcome === "rollback" ? predecessor : target;
+        expect(retained(database)).toEqual({
+          ...before,
+          userVersion: expectedVersion,
+          schemaVersion: expectedVersion,
+          layout:
+            outcome === "rollback"
+              ? before.layout
+              : before.layout.filter((entry) => entry.type !== "trigger"),
+        });
+        expect(rows(database, "PRAGMA foreign_key_check")).toEqual([]);
+      },
+      "state",
+    );
   },
 );
 
 it("restores historical triggers while retaining later unrelated writes and statistics", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const pathname = state.statePath("memory-revision-restore.sqlite");
-    using database = new DatabaseSync(pathname);
-    seed(database);
-    await restoreScopedMigration(
-      {
-        database,
-        pathname,
-        env: state.env,
-        scope,
-        migrate: () => migrate(database, pathname, state.env),
-      },
-      predecessor,
-      target,
-      () => retained(database),
-    );
-    database.exec("UPDATE memory_index_chunks SET text = 'old-writer-update'");
-    expect(row(database, "SELECT revision FROM memory_index_state WHERE id = 1")).toEqual({
-      revision: 3,
-    });
-  });
+  await withFixture(
+    "memory-revision-restore.sqlite",
+    async ({ database, restore }) => {
+      await restore(() => retained(database));
+      database.exec("UPDATE memory_index_chunks SET text = 'old-writer-update'");
+      expect(row(database, "SELECT revision FROM memory_index_state WHERE id = 1")).toEqual({
+        revision: 3,
+      });
+    },
+    "state",
+  );
 });

@@ -10,17 +10,13 @@ import {
 import { AGENT_DATABASE_MAINTENANCE_LEASE } from "./openclaw-agent-db-lease.js";
 import { withAgentDatabaseMaintenanceLease as withLease } from "./openclaw-agent-db-maintenance-lease.js";
 import { getOpenClawAgentMigrationSchema as migrationSchema } from "./openclaw-agent-db-schema-helpers.js";
-import {
-  ensureOpenClawAgentDatabaseSchema as ensureDatabase,
-  ensureOpenClawAgentSchema as ensureSchema,
-} from "./openclaw-agent-db-schema.js";
+import { ensureOpenClawAgentDatabaseSchema as ensureDatabase } from "./openclaw-agent-db-schema.js";
 import { assertOpenClawMigrationWitnessPreserved as assertWitness } from "./openclaw-migration-witness.js";
 import { openOpenClawStateDatabase } from "./openclaw-state-db.js";
 import {
   agentWitness,
   expectVersion,
-  migrateWithOutcome,
-  restoreScopedMigration,
+  migrationFixture,
   row,
   rows,
   seedVersion,
@@ -49,6 +45,7 @@ const schemaV28 = fs
     "$1, WITHOUT ROWID;",
   );
 const scope = ["schema_meta", "session_nodes", "session_reactions", "sqlite_stat1", "sqlite_stat4"];
+const withFixture = migrationFixture({ seed, predecessor: 28, target: retirementVersion, scope });
 
 const allIndexes = (db: DatabaseSync) =>
   rows(db, "SELECT name FROM sqlite_schema WHERE type = 'index' ORDER BY name");
@@ -196,25 +193,12 @@ it("retains the exact schema-28 admission contract", () => {
 it.each(["commit", "rollback"] as const)(
   "preserves rows and publishes the two index removals atomically (%s)",
   async (outcome) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const pathname = state.path("index-retirement.sqlite");
-      using database = new DatabaseSync(pathname);
-      seed(database);
+    await withFixture("index-retirement.sqlite", async ({ database, migrate }) => {
       const before = retained(database);
       const indexes = indexDefinitions(database);
       const witness = () => agentWitness(database);
       const originalWitness = witness();
-      await migrateWithOutcome(
-        {
-          database,
-          pathname,
-          env: state.env,
-          scope,
-          migrate: () => ensureSchema(database, "main", pathname, retirementVersion),
-        },
-        outcome,
-        retirementVersion,
-      );
+      await migrate(outcome);
       expect(retained(database)).toEqual(before);
       const expectedVersion = outcome === "rollback" ? 28 : retirementVersion;
       expectVersion(database, expectedVersion);
@@ -281,25 +265,15 @@ it.each(["commit", "rollback"] as const)(
 );
 
 it("restores the scoped indexes and rows without overwriting later unrelated writes", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const pathname = state.statePath("index-retirement-restore.sqlite");
-    using database = new DatabaseSync(pathname);
-    seed(database);
-    await restoreScopedMigration(
-      {
-        database,
-        pathname,
-        env: state.env,
-        scope,
-        migrate: () => ensureSchema(database, "main", pathname, retirementVersion),
-      },
-      28,
-      retirementVersion,
-      () => ({
+  await withFixture(
+    "index-retirement-restore.sqlite",
+    async ({ database, restore }) => {
+      await restore(() => ({
         retained: retained(database),
         indexes: indexDefinitions(database),
         version: row(database, "PRAGMA user_version"),
-      }),
-    );
-  });
+      }));
+    },
+    "state",
+  );
 });

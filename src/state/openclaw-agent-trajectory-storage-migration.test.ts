@@ -1,15 +1,12 @@
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { getOpenClawAgentMigrationSchema } from "./openclaw-agent-db-schema-helpers.js";
-import { ensureOpenClawAgentSchema } from "./openclaw-agent-db-schema.js";
 import { assertOpenClawMigrationWitnessPreserved } from "./openclaw-migration-witness.js";
 import {
   agentWitness,
   expectVersion,
-  migrateWithOutcome,
-  restoreScopedMigration,
+  migrationFixture,
   row,
   rows,
   seedVersion,
@@ -18,6 +15,12 @@ import {
 const predecessor = 29;
 const scope = ["schema_meta", "sqlite_stat1", "sqlite_stat4", "trajectory_runtime_events"];
 const legacyJson = ` { "type": "legacy", "data": ${JSON.stringify("日本語🦞\\u0000".repeat(500))} } `;
+const withFixture = migrationFixture({
+  seed,
+  predecessor,
+  target: AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
+  scope,
+});
 
 function seed(database: DatabaseSync): void {
   database.exec(getOpenClawAgentMigrationSchema(predecessor));
@@ -62,30 +65,11 @@ describe("agent trajectory payload migration", () => {
   it.each(["commit", "rollback"] as const)(
     "preserves legacy bytes and undeclared tables with atomic version publication (%s)",
     async (outcome) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-        const pathname = state.path("trajectory-storage.sqlite");
-        using database = new DatabaseSync(pathname);
-        seed(database);
+      await withFixture("trajectory-storage.sqlite", async ({ database, migrate }) => {
         const originalRows = legacyRows(database);
         const originalLayout = layout(database);
         const witness = agentWitness(database);
-        await migrateWithOutcome(
-          {
-            database,
-            pathname,
-            env: state.env,
-            scope,
-            migrate: () =>
-              ensureOpenClawAgentSchema(
-                database,
-                "main",
-                pathname,
-                AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
-              ),
-          },
-          outcome,
-          AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
-        );
+        await migrate(outcome);
         expect(legacyRows(database)).toEqual(originalRows);
         expect(rows(database, "PRAGMA foreign_key_check")).toEqual([]);
         const expectedVersion =
@@ -129,32 +113,16 @@ describe("agent trajectory payload migration", () => {
   );
 
   it("restores the scoped predecessor without overwriting later unrelated writes", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const pathname = state.statePath("trajectory-storage-restore.sqlite");
-      using database = new DatabaseSync(pathname);
-      seed(database);
-      await restoreScopedMigration(
-        {
-          database,
-          pathname,
-          env: state.env,
-          scope,
-          migrate: () =>
-            ensureOpenClawAgentSchema(
-              database,
-              "main",
-              pathname,
-              AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
-            ),
-        },
-        predecessor,
-        AGENT_TRAJECTORY_STORAGE_SCHEMA_VERSION,
-        () => ({
+    await withFixture(
+      "trajectory-storage-restore.sqlite",
+      async ({ database, restore }) => {
+        await restore(() => ({
           rows: legacyRows(database),
           layout: layout(database),
           version: row(database, "PRAGMA user_version"),
-        }),
-      );
-    });
+        }));
+      },
+      "state",
+    );
   });
 });
