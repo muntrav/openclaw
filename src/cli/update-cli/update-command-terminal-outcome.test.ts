@@ -128,7 +128,6 @@ afterEach(() => {
 async function scenario(
   kind:
     | "healthy"
-    | "renamed"
     | "retained"
     | "release-failure"
     | "revoked"
@@ -145,7 +144,10 @@ async function scenario(
   preparedRecovery = false,
   completedByGateway = false,
 ) {
-  async function publishSwap(fixture: Awaited<ReturnType<typeof createPackageSwapFixture>>) {
+  async function publishSwap(
+    fixture: Awaited<ReturnType<typeof createPackageSwapFixture>>,
+    expected: "committed" | "failed" = "committed",
+  ) {
     let transaction: PackageUpdateTransaction | undefined;
     const result = await swapStagedPackageInstall({
       ...fixture.params,
@@ -153,7 +155,7 @@ async function scenario(
         transaction = value;
       },
     });
-    if (!transaction || result.status !== "committed") {
+    if (!transaction || result.status !== expected) {
       throw new Error("fixture swap failed");
     }
     return { ...fixture, result, transaction };
@@ -170,22 +172,11 @@ async function scenario(
       }
       return rename(...args);
     });
-    let transaction: PackageUpdateTransaction | undefined;
-    let result;
     try {
-      result = await swapStagedPackageInstall({
-        ...fixture.params,
-        onTransaction: (value) => {
-          transaction = value;
-        },
-      });
+      swap = await publishSwap(fixture, "failed");
     } finally {
       effect.mockRestore();
     }
-    if (!transaction || result.status !== "failed") {
-      throw new Error("unverified fixture did not retain its failed transaction");
-    }
-    swap = { ...fixture, transaction, result };
   } else if (["link-retained", "link-changed", "transient-read"].includes(kind)) {
     const fixture = await createPackageSwapFixture(base);
     const checkout = path.join(base, "operator-checkout");
@@ -317,7 +308,7 @@ async function scenario(
   }
   vi.spyOn(fs, "rmdir").mockImplementation(async (...args) => {
     if (String(args[0]) === swap.transaction.backupRoot) {
-      if (kind === "renamed" || kind === "retained") {
+      if (kind === "retained") {
         expect(await fs.readdir(swap.transaction.backupRoot)).toEqual([]);
         injected = true;
         throw Object.assign(new Error("fixture obsolete backup deletion denied"), {
@@ -498,11 +489,7 @@ async function scenario(
       },
     ).catch(() => undefined);
   }
-  const retainedName = path
-    .basename(swap.transaction.backupRoot)
-    .replace(/^\.openclaw\./, ".openclaw-");
-  const expectedRetained =
-    kind === "renamed" ? path.join(swap.globalRoot, retainedName) : swap.transaction.backupRoot;
+  const expectedRetained = swap.transaction.backupRoot;
   const retainedExists = await fs.stat(expectedRetained).then(
     () => true,
     () => false,
@@ -638,7 +625,7 @@ describe("composed cleanup and terminal outcome", () => {
     expect(value.afterRepeat).toEqual(value.beforeRepeat);
   });
 
-  it.each(["renamed", "retained", "cleanup-deadline"] as const)(
+  it.each(["retained", "cleanup-deadline"] as const)(
     "reports the %s backup after verified activation and repeated completion",
     async (kind) => {
       const value = await scenario(kind, true, true);

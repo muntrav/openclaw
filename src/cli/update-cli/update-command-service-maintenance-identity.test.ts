@@ -275,6 +275,7 @@ it.runIf(process.platform === "linux").each([
             timeoutMs: 1000,
           }),
         ).resolves.toBe("ok");
+        expect(defaultRuntime.error).toHaveBeenCalledWith(prepared.serviceMutationSkipMessage);
         expect(classifyUpdateOutcome(result)).toBe("succeeded");
         expect(result.steps).toMatchObject([
           {
