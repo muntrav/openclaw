@@ -33,7 +33,7 @@ const STATUS_KEYS = {
   failed: "common.failed",
   stopped: "chat.sessionDetails.stopped",
 } as const;
-const SUMMARY_ORDER = ["running", "waiting", "queued", "done", "failed", "stopped"] as const;
+const SUMMARY_ORDER = ["running", "waiting", "queued", "done", "stopped"] as const;
 
 function isWorking(row: Subagent) {
   return row.status === "running" || row.status === "waiting";
@@ -107,7 +107,9 @@ export function ChatDetailsSubagents(props: ChatDetailsSubagentsProps) {
   const counts = createMemo(() =>
     SUMMARY_ORDER.map((status) => ({
       status,
-      count: props.rows.filter((row) => row.status === status).length,
+      // Done summarizes settled work here; individual rows retain their real outcome.
+      count: props.rows.filter((row) => (row.status === "failed" ? "done" : row.status) === status)
+        .length,
     })).filter((entry) => entry.count > 0),
   );
   const countLabel = (status: Subagent["status"]) =>
