@@ -28,6 +28,8 @@ import {
 } from "./run-cleanup-receipt.test-support.js";
 import {
   failedGatewayRunConfigSnapshot,
+  completeGatewayRunSnapshot as completeSnapshot,
+  registerInvalidConfigResetTests,
   gatewayRunReadFailures,
   type RuntimeDotEnvLoadResult,
 } from "./run-config.test-support.js";
@@ -458,24 +460,6 @@ describe("gateway run option collisions", () => {
     return { gateway: { mode: "local" }, ...(envVars ? { env: { vars: envVars } } : {}) };
   }
 
-  function completeSnapshot(config: OpenClawConfig, overrides: Partial<ConfigFileSnapshot> = {}) {
-    return {
-      path: "/tmp/openclaw.json",
-      exists: true,
-      valid: true,
-      parsed: config,
-      raw: JSON.stringify(config),
-      runtimeConfig: config,
-      resolved: config,
-      sourceConfig: config,
-      config,
-      issues: [],
-      legacyIssues: [],
-      warnings: [],
-      ...overrides,
-    } satisfies ConfigFileSnapshot;
-  }
-
   const bootstrapParams = { opts: {}, runtime: defaultRuntime };
   async function selectAndPrepareConfig() {
     const { selectGatewayRunEnvironment, prepareGatewayRunBootstrap } =
@@ -498,6 +482,7 @@ describe("gateway run option collisions", () => {
     return await prepareGatewayRunBootstrap({ opts: { reset: true }, runtime: defaultRuntime });
   }
 
+  registerInvalidConfigResetTests(configState);
   function callArg(mock: { mock: { calls: unknown[][] } }, index = 0, argIndex = 0): unknown {
     const call = mock.mock.calls[index];
     if (!call) {
