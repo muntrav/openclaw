@@ -10,9 +10,12 @@ import {
   registerSessionAutomationSource,
 } from "./session-automation-index.js";
 import { ready } from "./session-row-projection-record.js";
-import { createSessionRowProjection } from "./session-row-projection.js";
+import { createTestProjection } from "./session-row-projection.read-fixture.test-support.js";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  registerSessionAutomationSource(null);
+  vi.restoreAllMocks();
+});
 
 it("rebuilds only changed automation bindings and preserves complete unrelated rows", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -30,56 +33,51 @@ it("rebuilds only changed automation bindings and preserves complete unrelated r
     }
     const jobs: CronJob[] = [];
     registerSessionAutomationSource({ getJobs: () => jobs, getDefaultAgentId: () => "main" });
-    const projection = await createSessionRowProjection({ cfg });
+    using projection = await createTestProjection({ cfg });
     const snapshot = () =>
       projection
         .selectEntries()
         .filter(ready)
         .map((row) => projection.present(row, { now: 1 }));
-    try {
-      await projection.ensureMaterialized();
-      for (const key of keys) {
-        projection.describe({ agentId: "main", key });
-      }
-      const before = snapshot();
-      const databaseReads = vi.spyOn(history, "withSessionHistoryWorkerDatabases");
-      const sharedReads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
-      const refresh = async (expectedCount: number, boundKey?: string) => {
-        const count = projection.materializedCount;
-        invalidateSessionAutomationIndex();
-        await projection.ensureMaterialized();
-        expect(projection.materializedCount - count).toBe(expectedCount);
-        expect(snapshot()).toEqual(
-          before.map((row) =>
-            row.key === boundKey ? Object.assign({}, row, { hasAutomation: true }) : row,
-          ),
-        );
-      };
-      await refresh(0);
-
-      const binding = {
-        id: "binding",
-        enabled: true,
-        sessionTarget: `session:${keys[0]}`,
-      } as CronJob;
-      jobs.push(binding);
-      await refresh(1, keys[0]);
-
-      binding.sessionTarget = `session:${keys[1]}`;
-      await refresh(2, keys[1]);
-      expect(databaseReads).not.toHaveBeenCalled();
-      expect(sharedReads).not.toHaveBeenCalled();
-
-      // A real store publication still rebuilds its resident rows.
-      const count = projection.materializedCount;
-      sessionChanges.emit({ all: true, scope: "stores" });
-      await projection.ensureMaterialized();
-      expect(projection.materializedCount - count).toBe(keys.length);
-      expect(databaseReads).toHaveBeenCalled();
-    } finally {
-      projection.dispose();
-      registerSessionAutomationSource(null);
+    await projection.ensureMaterialized();
+    for (const key of keys) {
+      projection.describe({ agentId: "main", key });
     }
+    const before = snapshot();
+    const databaseReads = vi.spyOn(history, "withSessionHistoryWorkerDatabases");
+    const sharedReads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
+    const refresh = async (expectedCount: number, boundKey?: string) => {
+      const count = projection.materializedCount;
+      invalidateSessionAutomationIndex();
+      await projection.ensureMaterialized();
+      expect(projection.materializedCount - count).toBe(expectedCount);
+      expect(snapshot()).toEqual(
+        before.map((row) =>
+          row.key === boundKey ? Object.assign({}, row, { hasAutomation: true }) : row,
+        ),
+      );
+    };
+    await refresh(0);
+
+    const binding = {
+      id: "binding",
+      enabled: true,
+      sessionTarget: `session:${keys[0]}`,
+    } as CronJob;
+    jobs.push(binding);
+    await refresh(1, keys[0]);
+
+    binding.sessionTarget = `session:${keys[1]}`;
+    await refresh(2, keys[1]);
+    expect(databaseReads).not.toHaveBeenCalled();
+    expect(sharedReads).not.toHaveBeenCalled();
+
+    // A real store publication still rebuilds its resident rows.
+    const count = projection.materializedCount;
+    sessionChanges.emit({ all: true, scope: "stores" });
+    await projection.ensureMaterialized();
+    expect(projection.materializedCount - count).toBe(keys.length);
+    expect(databaseReads).toHaveBeenCalled();
   });
 });
 
@@ -99,23 +97,18 @@ it("keeps automation aliases scoped to their logical agent in a shared store", a
     const binding = { id: "binding", enabled: true, sessionTarget: "main" } as CronJob;
     const jobs = [binding];
     registerSessionAutomationSource({ getJobs: () => jobs, getDefaultAgentId: () => "main" });
-    const projection = await createSessionRowProjection({ cfg });
-    try {
-      await projection.ensureMaterialized();
-      projection.describe({ agentId: "main", key: "global", storePath });
-      const work = projection.describe({ agentId: "work", key: "global", storePath });
-      const count = projection.materializedCount;
-      binding.enabled = false;
-      invalidateSessionAutomationIndex();
-      await projection.ensureMaterialized();
-      expect(projection.materializedCount - count).toBe(1);
-      expect(projection.describe({ agentId: "work", key: "global", storePath })).toBe(work);
-      expect(
-        projection.snapshot({ agentId: "main", key: "global", storePath }).row?.hasAutomation,
-      ).toBeUndefined();
-    } finally {
-      projection.dispose();
-      registerSessionAutomationSource(null);
-    }
+    using projection = await createTestProjection({ cfg });
+    await projection.ensureMaterialized();
+    projection.describe({ agentId: "main", key: "global", storePath });
+    const work = projection.describe({ agentId: "work", key: "global", storePath });
+    const count = projection.materializedCount;
+    binding.enabled = false;
+    invalidateSessionAutomationIndex();
+    await projection.ensureMaterialized();
+    expect(projection.materializedCount - count).toBe(1);
+    expect(projection.describe({ agentId: "work", key: "global", storePath })).toBe(work);
+    expect(
+      projection.snapshot({ agentId: "main", key: "global", storePath }).row?.hasAutomation,
+    ).toBeUndefined();
   });
 });

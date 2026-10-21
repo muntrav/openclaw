@@ -25,7 +25,6 @@ import {
 import { applySessionEntryExactReplacements } from "../config/sessions/session-accessor.sqlite-replacement-projection.js";
 import type { SessionRowDatabaseFacts } from "../config/sessions/session-row-facts.types.js";
 import { removeSessionMember } from "../config/sessions/session-sharing-store.native.js";
-import * as history from "../config/sessions/session-transcript-worker-runtime.js";
 import type { InternalSessionEntry, SessionAcpMeta } from "../config/sessions/types.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
@@ -56,6 +55,7 @@ import { isColdArchivedSessionRow } from "./session-row-projection-archive.js";
 import { ready } from "./session-row-projection-record.js";
 import { withAcceptedSuffix } from "./session-row-projection.accepted-facts.test-support.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
+import { watchRowFacts } from "./session-row-projection.read-fixture.test-support.js";
 import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 import * as rowInputs from "./session-utils-row.js";
 
@@ -148,24 +148,10 @@ it("keeps Board and shared facts while transcript receipts advance summary fresh
     try {
       await projection.ensureMaterialized();
       const rowReads: string[] = [];
-      const readDatabases = history.withSessionHistoryWorkerDatabases;
-      vi.spyOn(history, "withSessionHistoryWorkerDatabases").mockImplementation(
-        (databases, consume, lane) =>
-          readDatabases(
-            databases,
-            (owners) =>
-              consume(
-                owners.map((owner) => ({
-                  ...owner,
-                  readRowFacts(input) {
-                    rowReads.push(...input.sessionKeys);
-                    return owner.readRowFacts(input);
-                  },
-                })),
-              ),
-            lane,
-          ),
-      );
+      watchRowFacts((owner) => (input) => {
+        rowReads.push(...input.sessionKeys);
+        return owner.readRowFacts(input);
+      });
       const sharedReads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
       await persistSessionTranscriptTurn(scope, {
         ...transcriptMessage("user", "First input"),
@@ -585,22 +571,11 @@ it.each(["bulk completion with pinned pages", "transcript-only invalidation"] as
               .map((row) => row.entry.updatedAt),
           ).toEqual([2, 2]);
           const reads: SessionRowDatabaseFacts[][] = [];
-          const readDatabases = history.withSessionHistoryWorkerDatabases;
-          vi.spyOn(history, "withSessionHistoryWorkerDatabases").mockImplementation(
-            (databases, consume) =>
-              readDatabases(databases, (owners) =>
-                consume(
-                  owners.map((owner) => ({
-                    ...owner,
-                    async readRowFacts(input) {
-                      const result = await owner.readRowFacts(input);
-                      reads.push(structuredClone(result.rows));
-                      return result;
-                    },
-                  })),
-                ),
-              ),
-          );
+          watchRowFacts((owner) => async (input) => {
+            const result = await owner.readRowFacts(input);
+            reads.push(structuredClone(result.rows));
+            return result;
+          });
           let elapsed = 0;
           const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
           const readInputs = rowInputs.readSessionRowInputs;

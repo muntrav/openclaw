@@ -7,7 +7,7 @@ import {
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
-import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   retainSessionListForegroundWork,
@@ -22,6 +22,7 @@ import { createSessionRowProjection } from "./session-row-projection.js";
 import {
   createTestProjection,
   holdForeground,
+  waitForRead,
 } from "./session-row-projection.read-fixture.test-support.js";
 import * as transcriptBackfill from "./session-row-transcript-backfill.js";
 import { listProjectedSessions } from "./session-utils-list.js";
@@ -43,24 +44,17 @@ function preparedSnapshot(projection: Projection, query: SnapshotQuery) {
   );
 }
 
-async function waitForPage(
+const waitForPage = (
   page: ReturnType<typeof listProjectedSessions>,
-  prepared: Deferred,
+  prepared: { promise: Promise<void> },
   signal: AbortSignal,
-) {
-  const abort = () => prepared.reject(signal.reason);
-  try {
-    signal.addEventListener("abort", abort, { once: true });
-    signal.throwIfAborted();
-    void page.then(
-      () => prepared.reject(new Error("Archive page settled before its preparation barrier")),
-      prepared.reject,
-    );
-    await prepared.promise;
-  } finally {
-    signal.removeEventListener("abort", abort);
-  }
-}
+) =>
+  waitForRead(
+    prepared.promise,
+    page,
+    signal,
+    "Archive page settled before its preparation barrier",
+  );
 
 it("keeps archived rows cold at hydration and across broad refreshes", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -140,17 +134,23 @@ it("reindexes cold lineage when a literal parent appears and disappears", async 
         modelOverrideSource: "user",
         modelOverrideRouteResolution: "resolved",
       });
+    const removeParent = (projection: Projection, key: string) =>
+      deleteSessionEntryLifecycle({
+        agentId: "main",
+        storePath: projection.capture({ agentId: "main", key })!.storeTarget.storePath,
+        archiveTranscript: false,
+        target: { canonicalKey: key, storeKeys: [key] },
+      });
     writeParent("global", "qwen3:8b");
     writeRow(
       child,
       { sessionId: "cold-child", archivedAt: 1, parentSessionKey: parent, spawnedBy: parent },
       "alpha",
     );
-    const release = retainSessionListForegroundWork();
-    let projection: Awaited<ReturnType<typeof createSessionRowProjection>> | undefined;
+    using _ = holdForeground();
+    using projection = await createTestProjection({ cfg: sharedConfig, modelCatalog: [] });
     let boardReads: ReturnType<typeof observeSqliteReadSql> | undefined;
     try {
-      projection = await createSessionRowProjection({ cfg: sharedConfig, modelCatalog: [] });
       const initial = projection
         .selectEntries({ parentSessionKey: "global" })
         .find((row) => row.key === child)!;
@@ -158,9 +158,6 @@ it("reindexes cold lineage when a literal parent appears and disappears", async 
       expect(ready(initial)).toBe(false);
       boardReads = observeSqliteReadSql(StatementSync.prototype);
       const check = async (literal: boolean) => {
-        if (!projection) {
-          throw new Error("Expected a live projection");
-        }
         do {
           await projection.prepareMembership();
         } while (projection.needsMembershipPreparation());
@@ -202,12 +199,7 @@ it("reindexes cold lineage when a literal parent appears and disappears", async 
       await check(false);
       writeParent(parent, "qwen3:32b");
       await check(true);
-      await deleteSessionEntryLifecycle({
-        agentId: "main",
-        storePath: projection.capture({ agentId: "main", key: parent })!.storeTarget.storePath,
-        archiveTranscript: false,
-        target: { canonicalKey: parent, storeKeys: [parent] },
-      });
+      await removeParent(projection, parent);
       await check(false);
       const listed = await listRows(projection, { archived: true });
       expect(listed.sessions).toEqual([
@@ -219,12 +211,7 @@ it("reindexes cold lineage when a literal parent appears and disappears", async 
         spawnedBy: "global",
       });
       expect(scopedChildren.sessions.map((row) => row.key)).toEqual([child]);
-      await deleteSessionEntryLifecycle({
-        agentId: "main",
-        storePath: projection.capture({ agentId: "main", key: "global" })!.storeTarget.storePath,
-        archiveTranscript: false,
-        target: { canonicalKey: "global", storeKeys: ["global"] },
-      });
+      await removeParent(projection, "global");
       for (const sentinel of [parent, "global", "unknown"]) {
         writeRow(
           child,
@@ -240,8 +227,6 @@ it("reindexes cold lineage when a literal parent appears and disappears", async 
       }
     } finally {
       boardReads?.restore();
-      projection?.dispose();
-      release();
     }
   });
 });

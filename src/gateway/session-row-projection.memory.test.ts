@@ -222,10 +222,9 @@ it("keeps absent and closed sibling selections out of native storage", async () 
   const child = await fixture(childKey);
   child.owner.closeSession(childKey);
   const absent = "agent:work:dashboard:incognito-absent";
-  await readRows(root.binding, [childKey, absent], (rows) => {
-    expect(rowAt(rows, childKey)).toBeUndefined();
-    expect(rowAt(rows, absent)).toBeUndefined();
-  });
+  await readRows(root.binding, [childKey, absent], (rows) =>
+    expect([rowAt(rows, childKey), rowAt(rows, absent)]).toEqual([undefined, undefined]),
+  );
 });
 
 it("prepares queued rows after the turn releases its actor without extending session lifetime", async () => {

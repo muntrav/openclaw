@@ -461,6 +461,11 @@ it("retains compaction display facts until a branch change requires a new tail",
     };
     const query = { agentId: scope.agentId, key: scope.sessionKey };
     replaceSessionEntrySync(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const message = (text: string, timestamp: number) =>
+      makeAgentAssistantMessage({
+        content: [{ type: "text", text }],
+        timestamp,
+      });
     const manager = await SessionManager.openAsync(scope);
     const keptId = await manager.appendMessageAsync({
       role: "user",
@@ -468,18 +473,17 @@ it("retains compaction display facts until a branch change requires a new tail",
       timestamp: 1,
     });
     expect(keptId).toBeTypeOf("string");
-    await manager.appendMessageAsync(
-      makeAgentAssistantMessage({
-        content: [{ type: "text", text: "Keep this reply" }],
-        timestamp: 2,
-      }),
-    );
+    await manager.appendMessageAsync(message("Keep this reply", 2));
     using projection = await createTestProjection({ cfg, modelCatalog: [] });
+    const displayRow = () => projection.snapshot(query, { includeLastMessage: true }).row;
+    const expectReply = (text: string, fields = {}) =>
+      expect(displayRow()).toMatchObject({
+        lastMessagePreview: text,
+        lastAssistantMessage: { text },
+        ...fields,
+      });
     await projection.ensureMaterialized();
-    expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject({
-      lastMessagePreview: "Keep this reply",
-      lastAssistantMessage: { text: "Keep this reply" },
-    });
+    expectReply("Keep this reply");
     const reads: string[] = [];
     watchRowFacts((owner) => (input) => {
       reads.push(...input.sessionKeys);
@@ -501,25 +505,16 @@ it("retains compaction display facts until a branch change requires a new tail",
     await compact();
     await projection.ensureMaterialized();
     await nextTurn();
-    expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject({
-      totalTokens: 45,
-      lastMessagePreview: "Keep this reply",
-      lastAssistantMessage: { text: "Keep this reply" },
-    });
+    expectReply("Keep this reply", { totalTokens: 45 });
     expect(projection.capture(query)?.entry?.compactionCount).toBe(1);
     expect(reads).toEqual([]);
     expect(backfill).not.toHaveBeenCalled();
 
-    await manager.appendMessageAsync(
-      makeAgentAssistantMessage({ content: [{ type: "text", text: "New reply" }], timestamp: 3 }),
-    );
+    await manager.appendMessageAsync(message("New reply", 3));
     await compact();
     await projection.ensureMaterialized();
     await nextTurn();
-    expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject({
-      lastMessagePreview: "New reply",
-      lastAssistantMessage: { text: "New reply" },
-    });
+    expectReply("New reply");
     expect(reads).toEqual([]);
     expect(backfill).not.toHaveBeenCalled();
 
@@ -530,12 +525,8 @@ it("retains compaction display facts until a branch change requires a new tail",
     await compact();
     await projection.ensureMaterialized();
     await withinTest(changedBranch, signal);
-    expect(projection.snapshot(query, { includeLastMessage: true }).row?.lastMessagePreview).toBe(
-      "Keep this request",
-    );
-    expect(
-      projection.snapshot(query, { includeLastMessage: true }).row?.lastAssistantMessage,
-    ).toBeUndefined();
+    expect(displayRow()).toMatchObject({ lastMessagePreview: "Keep this request" });
+    expect(displayRow()?.lastAssistantMessage).toBeUndefined();
     expect(backfill).toHaveBeenCalled();
   });
 });

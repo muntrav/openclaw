@@ -53,12 +53,15 @@ import {
   requestContext,
 } from "./server-methods/sessions-read-cache.test-support.js";
 import { prepareGatewaySessionAccessAuthority } from "./session-access-authority.js";
-import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { withReadySessionRows } from "./session-row-prepared-read.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import * as records from "./session-row-projection-record.js";
-import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
-import { watchRowFacts as observeRowFacts } from "./session-row-projection.read-fixture.test-support.js";
+import {
+  createTestProjection as createSessionRowProjection,
+  holdForeground as retainSessionListForegroundWork,
+  seedRow,
+  watchRowFacts as observeRowFacts,
+} from "./session-row-projection.read-fixture.test-support.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
 import { listProjectedSessions } from "./session-utils-list.js";
 import * as rowInputs from "./session-utils-row.js";
@@ -214,7 +217,7 @@ it.each([
         entry: { sessionId: `shared-row-read-${index}`, updatedAt: 1, label: "Previous" },
       }));
       for (const { query, entry } of rows) {
-        replaceSessionEntrySync({ agentId: query.agentId, sessionKey: query.key }, entry);
+        seedRow(query, entry);
       }
       const releaseForeground = retainSessionListForegroundWork();
       const projection = await createSessionRowProjection({ cfg: {}, modelCatalog: [] });
@@ -232,10 +235,7 @@ it.each([
           return reply;
         });
         for (const { query, entry } of rows) {
-          replaceSessionEntrySync(
-            { agentId: query.agentId, sessionKey: query.key },
-            { ...entry, updatedAt: 2, label: "Committed" },
-          );
+          seedRow(query, { ...entry, updatedAt: 2, label: "Committed" });
           sessionChanges.emit({
             agentId: query.agentId,
             sessionKey: query.key,
@@ -360,7 +360,7 @@ it("preserves a keyed replacement while an older worker reply is pending", async
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const query = { agentId: "main", key: "agent:main:worker-replacement" };
     const entry = { sessionId: "original", updatedAt: 1 };
-    replaceSessionEntrySync({ agentId: query.agentId, sessionKey: query.key }, entry);
+    seedRow(query, entry);
     const releaseForeground = retainSessionListForegroundWork();
     const entered = createDeferredCore();
     const release = createDeferredCore();
@@ -385,10 +385,7 @@ it("preserves a keyed replacement while an older worker reply is pending", async
       reading = projection.ensureMaterialized();
       await entered.promise;
       // The committed replacement retires authority before the older reply returns.
-      replaceSessionEntrySync(
-        { agentId: query.agentId, sessionKey: query.key },
-        { ...entry, sessionId: "replacement" },
-      );
+      seedRow(query, { ...entry, sessionId: "replacement" });
       expect(projection.isCurrent(original!)).toBe(false);
       const respond = vi.fn();
       describing = Promise.resolve(
@@ -430,16 +427,13 @@ it.each([false, true])(
       const b = { agentId: "main", key: "agent:main:category-changed" };
       const c = { agentId: "main", key: "agent:main:category-structural" };
       for (const query of structuralPending ? [a, b, c] : [a, b]) {
-        replaceSessionEntrySync(
-          { agentId: query.agentId, sessionKey: query.key },
-          {
-            sessionId: query.key,
-            updatedAt: 1,
-            label: query === a ? "Unrelated row" : "Changed row",
-            ...(query === b ? { category: "Work" } : {}),
-            createdActor: { type: "human", source: "profile", id: owner.id },
-          },
-        );
+        seedRow(query, {
+          sessionId: query.key,
+          updatedAt: 1,
+          label: query === a ? "Unrelated row" : "Changed row",
+          ...(query === b ? { category: "Work" } : {}),
+          createdActor: { type: "human", source: "profile", id: owner.id },
+        });
       }
       const releaseForeground = retainSessionListForegroundWork();
       const projection = await createSessionRowProjection({ cfg, modelCatalog: [] }).catch(
@@ -903,27 +897,21 @@ it("keeps the stored main address and ACP runtime after mainKey changes", async 
     ).toEqual([meta]);
     expect(resolveSessionStoreKey({ cfg: cfgAfter, ...target })).toBe("agent:main:work");
 
-    const releaseForeground = retainSessionListForegroundWork();
-    let projection: SessionRowProjection | undefined;
-    try {
-      projection = await createSessionRowProjection({ cfg: cfgAfter, modelCatalog: [] });
-      await projection.ensureMaterialized();
-      expect(
-        projection.describe({ agentId: target.agentId, key: target.sessionKey })?.materialized
-          .source.thinkingProjection.acpMeta,
-      ).toEqual(meta);
-      const result = await listProjectedSessions({ projection, opts: { agentId: "main" } });
-      expect(result.sessions).toEqual([
-        expect.objectContaining({
-          key: target.sessionKey,
-          sessionId: entry.sessionId,
-          runtimeSelectionLocked: true,
-        }),
-      ]);
-    } finally {
-      projection?.dispose();
-      releaseForeground();
-    }
+    using _ = retainSessionListForegroundWork();
+    using projection = await createSessionRowProjection({ cfg: cfgAfter, modelCatalog: [] });
+    await projection.ensureMaterialized();
+    expect(
+      projection.describe({ agentId: target.agentId, key: target.sessionKey })?.materialized.source
+        .thinkingProjection.acpMeta,
+    ).toEqual(meta);
+    const result = await listProjectedSessions({ projection, opts: { agentId: "main" } });
+    expect(result.sessions).toEqual([
+      expect.objectContaining({
+        key: target.sessionKey,
+        sessionId: entry.sessionId,
+        runtimeSelectionLocked: true,
+      }),
+    ]);
   });
 });
 
@@ -937,47 +925,42 @@ it("refreshes prepared ACP metadata on publication and fences replacement lifecy
       lifecycleRevision: "first",
       updatedAt: 1,
     });
-    const releaseForeground = retainSessionListForegroundWork();
-    const projection = await createSessionRowProjection({ cfg });
-    try {
-      await projection.ensureMaterialized();
-      expect(projection.snapshot({ agentId: "main", key }).row?.runtimeSelectionLocked).toBe(false);
-      for (const backend of ["acpx", "replacement-acp-backend"]) {
-        // Canonical publication invalidates prepared metadata without host SQL.
-        seedCanonicalAcpSessionMeta({
-          sessionKey: key.toUpperCase(),
-          lifecycleRevision: "first",
-          meta: {
-            backend,
-            agent: "main",
-            runtimeSessionName: "worker-row",
-            mode: "persistent",
-            state: "idle",
-            lastActivityAt: 1,
-          },
-        });
-        const reads = observeSqliteReadSql(StatementSync.prototype);
-        try {
-          await projection.ensureMaterialized();
-          expect(projection.snapshot({ agentId: "main", key }).row).toMatchObject({
-            runtimeSelectionLocked: true,
-            agentRuntime: { id: backend, source: "session-key" },
-          });
-          expect(reads.queries.filter((sql) => sql.includes("acp_sessions"))).toEqual([]);
-        } finally {
-          reads.restore();
-        }
-      }
-      replaceSessionEntrySync(target, {
-        sessionId: "worker-row",
-        lifecycleRevision: "replacement",
-        updatedAt: 2,
+    using _ = retainSessionListForegroundWork();
+    using projection = await createSessionRowProjection({ cfg });
+    await projection.ensureMaterialized();
+    expect(projection.snapshot({ agentId: "main", key }).row?.runtimeSelectionLocked).toBe(false);
+    for (const backend of ["acpx", "replacement-acp-backend"]) {
+      // Canonical publication invalidates prepared metadata without host SQL.
+      seedCanonicalAcpSessionMeta({
+        sessionKey: key.toUpperCase(),
+        lifecycleRevision: "first",
+        meta: {
+          backend,
+          agent: "main",
+          runtimeSessionName: "worker-row",
+          mode: "persistent",
+          state: "idle",
+          lastActivityAt: 1,
+        },
       });
-      await projection.ensureMaterialized();
-      expect(projection.snapshot({ agentId: "main", key }).row?.runtimeSelectionLocked).toBe(false);
-    } finally {
-      projection.dispose();
-      releaseForeground();
+      const reads = observeSqliteReadSql(StatementSync.prototype);
+      try {
+        await projection.ensureMaterialized();
+        expect(projection.snapshot({ agentId: "main", key }).row).toMatchObject({
+          runtimeSelectionLocked: true,
+          agentRuntime: { id: backend, source: "session-key" },
+        });
+        expect(reads.queries.filter((sql) => sql.includes("acp_sessions"))).toEqual([]);
+      } finally {
+        reads.restore();
+      }
     }
+    replaceSessionEntrySync(target, {
+      sessionId: "worker-row",
+      lifecycleRevision: "replacement",
+      updatedAt: 2,
+    });
+    await projection.ensureMaterialized();
+    expect(projection.snapshot({ agentId: "main", key }).row?.runtimeSelectionLocked).toBe(false);
   });
 });

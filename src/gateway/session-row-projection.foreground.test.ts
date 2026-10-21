@@ -342,62 +342,45 @@ it("reuses an unknown preview until a committed transcript watermark changes", a
   });
 });
 
-it("keeps a committed append preview when an older background read finishes", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const { scope, query } = await seedPreview("preview-receipt", "Older preview", cfg);
-    clearStoredSessionRowTranscriptForTest(scope);
-    const backfill = holdBackfillPublication();
-    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
-    try {
-      await projection.ensureMaterialized();
-      projection.describe(query);
-      expect(await backfill.prepared).toMatchObject({ lastMessagePreview: "Older preview" });
-      await sessions.persistSessionTranscriptTurn(scope, {
-        config: cfg,
-        messages: [{ message: { role: "assistant", content: "Committed preview" } }],
-        touchSessionEntry: false,
-      });
-      await projection.ensureMaterialized();
-      expect(preview(projection, query)).toBe("Committed preview");
-      await backfill.publish();
-      expect(preview(projection, query)).toBe("Committed preview");
-    } finally {
-      projection.dispose();
-      await backfill.close();
-    }
-  });
-});
-
-it("drops an older backfill after broad invalidation clears retained preview facts", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const { scope, query } = await seedPreview("preview-invalidated", "Older preview", cfg);
-    clearStoredSessionRowTranscriptForTest(scope);
-    const backfill = holdBackfillPublication();
-    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
-    try {
-      await projection.ensureMaterialized();
-      projection.describe(query);
-      expect(await backfill.prepared).toMatchObject({ lastMessagePreview: "Older preview" });
-      await sessions.persistSessionTranscriptTurn(scope, {
-        config: cfg,
-        messages: [{ message: { role: "assistant", content: "Committed preview" } }],
-        touchSessionEntry: false,
-      });
-      await projection.ensureMaterialized();
-      const row = projection.describe(query)!;
-      expect(row.lastMessagePreview).toBe("Committed preview");
-      sessionChanges.emit({ all: true, scope: { agentId: "main" }, factsInvalidated: true });
-      expect(row.retainedDatabaseFacts).toBeUndefined();
-      await backfill.publish();
-      expect(row.lastMessagePreview).toBe("Committed preview");
-      await projection.ensureMaterialized();
-      expect(preview(projection, query)).toBe("Committed preview");
-    } finally {
-      projection.dispose();
-      await backfill.close();
-    }
-  });
-});
+it.each([false, true])(
+  "keeps a committed preview over an older backfill (invalidated: %s)",
+  async (invalidate) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const { scope, query } = await seedPreview("preview-invalidated", "Older preview", cfg);
+      clearStoredSessionRowTranscriptForTest(scope);
+      const backfill = holdBackfillPublication();
+      const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+      try {
+        await projection.ensureMaterialized();
+        projection.describe(query);
+        expect(await backfill.prepared).toMatchObject({ lastMessagePreview: "Older preview" });
+        await sessions.persistSessionTranscriptTurn(scope, {
+          config: cfg,
+          messages: [{ message: { role: "assistant", content: "Committed preview" } }],
+          touchSessionEntry: false,
+        });
+        await projection.ensureMaterialized();
+        if (invalidate) {
+          const row = projection.describe(query)!;
+          expect(row.lastMessagePreview).toBe("Committed preview");
+          sessionChanges.emit({ all: true, scope: { agentId: "main" }, factsInvalidated: true });
+          expect(row.retainedDatabaseFacts).toBeUndefined();
+          await backfill.publish();
+          expect(row.lastMessagePreview).toBe("Committed preview");
+          await projection.ensureMaterialized();
+          expect(preview(projection, query)).toBe("Committed preview");
+        } else {
+          expect(preview(projection, query)).toBe("Committed preview");
+          await backfill.publish();
+          expect(preview(projection, query)).toBe("Committed preview");
+        }
+      } finally {
+        projection.dispose();
+        await backfill.close();
+      }
+    });
+  },
+);
 
 it("keeps pending Worker metadata, membership, and summary facts across optional publication", ({
   signal,

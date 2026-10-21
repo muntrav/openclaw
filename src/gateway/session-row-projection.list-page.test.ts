@@ -18,10 +18,8 @@ import {
   requestContext,
   sessionReadHandlers,
 } from "./server-methods/sessions-read-cache.test-support.js";
-import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { listRows, writeRow } from "./session-row-projection-read-fixtures.test-support.js";
-import { createSessionRowProjection } from "./session-row-projection.js";
 import {
   createTestProjection,
   holdForeground,
@@ -31,10 +29,16 @@ import type { SessionsListResult } from "./session-utils.types.js";
 
 afterEach(() => vi.restoreAllMocks());
 const cfg = { agents: { entries: { main: {} } } };
+function withListState(run: () => Promise<void>) {
+  return withOpenClawTestState({ scenario: "minimal" }, async () => {
+    setRuntimeConfigSnapshot(cfg);
+    await run();
+  });
+}
+const keysOf = (result: SessionsListResult) => result.sessions.map(({ key }) => key);
 
 it("reconciles an invalidated row while rebuilding topology for sessions.list", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    setRuntimeConfigSnapshot(cfg);
+  await withListState(async () => {
     const keys = ["agent:main:dashboard:pending-row", "agent:main:dashboard:other-row"];
     for (const [index, sessionKey] of keys.entries()) {
       writeRow(sessionKey, { sessionId: `pending-${index}`, updatedAt: index + 1 });
@@ -85,8 +89,7 @@ it("reconciles an invalidated row while rebuilding topology for sessions.list", 
 });
 
 it("retries failed catalog renewal without blocking lists on its replacement", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    setRuntimeConfigSnapshot(cfg);
+  await withListState(async () => {
     const key = "agent:main:dashboard:catalog-retry";
     const catalog = [
       {
@@ -103,8 +106,8 @@ it("retries failed catalog renewal without blocking lists on its replacement", a
       modelOverride: "fixture",
     });
     const readCatalog = vi.fn(async () => catalog);
-    const release = retainSessionListForegroundWork();
-    const projection = await createSessionRowProjection({
+    using _ = holdForeground();
+    using projection = await createTestProjection({
       cfg,
       modelCatalog: catalog,
       getModelCatalog: readCatalog,
@@ -129,15 +132,12 @@ it("retries failed catalog renewal without blocking lists on its replacement", a
     } finally {
       failure.resolve(catalog);
       replacement.resolve(catalog);
-      projection.dispose();
-      release();
     }
   });
 });
 
 it("retains prepared child metadata across a parent presentation refresh", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    setRuntimeConfigSnapshot(cfg);
+  await withListState(async () => {
     const parent = "agent:main:dashboard:prepared-parent";
     const child = "agent:main:dashboard:prepared-child";
     writeRow(parent, { sessionId: "prepared-parent", updatedAt: 2 });
@@ -156,7 +156,7 @@ it("retains prepared child metadata across a parent presentation refresh", async
       const listed = await listParent();
       expect(listed.sessions).toMatchObject([{ key: parent, childSessions: [child] }]);
       const page = await listRows(projection, { limit: 1, offset: 1 });
-      expect(page.sessions.map((row) => row.key)).toEqual([child]);
+      expect(keysOf(page)).toEqual([child]);
       expect(reads).not.toHaveBeenCalled();
       expect(sql.queries).toEqual([]);
     } finally {
@@ -166,8 +166,7 @@ it("retains prepared child metadata across a parent presentation refresh", async
 });
 
 it("counts matching children across cached serialized archive views", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    setRuntimeConfigSnapshot(cfg);
+  await withListState(async () => {
     const parent = "agent:main:dashboard:archive-parent";
     const children = [1, 2].map((id) => `${parent}-child-${id}`);
     writeRow(parent, { sessionId: "archive-parent", updatedAt: 3 });
@@ -193,7 +192,7 @@ it("counts matching children across cached serialized archive views", async () =
       { archived: true },
       { acceptsSerializedJson: true },
     );
-    expect(archived.sessions.map((row) => row.key)).toEqual([children[1]]);
+    expect(keysOf(archived)).toEqual([children[1]]);
     const all = await listRows(
       projection,
       { archived: "all", limit: 1 },
@@ -212,8 +211,7 @@ it("counts matching children across cached serialized archive views", async () =
 });
 
 it("prepares the roster once and yields while enriching only overlapping selected pages", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    setRuntimeConfigSnapshot(cfg);
+  await withListState(async () => {
     const keys = Array.from({ length: 80 }, (_, index) => `agent:main:dashboard:page-${index}`);
     for (const [index, key] of keys.entries()) {
       writeRow(key, { sessionId: `page-${index}`, updatedAt: index + 1 });
@@ -261,14 +259,12 @@ it("prepares the roster once and yields while enriching only overlapping selecte
     try {
       sessionChanges.emit({ all: true, scope: "catalog" });
       const pages = await Promise.all([0, 5, 0, 5].map(listPage));
-      expect(pages.map((page) => page.sessions.map((row) => row.sessionId))).toEqual([
-        ["page-79", "page-78", "page-77", "page-76", "page-75"],
-        ["page-74", "page-73", "page-72", "page-71", "page-70"],
-        ["page-79", "page-78", "page-77", "page-76", "page-75"],
-        ["page-74", "page-73", "page-72", "page-71", "page-70"],
-      ]);
-      expect(pages.map((page) => page.sessions.map((row) => row.key))).toEqual(
-        [0, 5, 0, 5].map((offset) => keys.toReversed().slice(offset, offset + 5)),
+      const expectedPages = [0, 5, 0, 5].map((offset) =>
+        Array.from({ length: 5 }, (_entry, index) => `page-${79 - offset - index}`),
+      );
+      expect(pages.map((page) => page.sessions.map((row) => row.sessionId))).toEqual(expectedPages);
+      expect(pages.map(keysOf)).toEqual(
+        expectedPages.map((page) => page.map((id) => `agent:main:dashboard:${id}`)),
       );
       expect(await checkpoint).toBeLessThan(5);
       expect(rendered.toSorted()).toEqual(keys.slice(-10).toSorted());
@@ -294,8 +290,7 @@ it("prepares the roster once and yields while enriching only overlapping selecte
 });
 
 it("selects fresh metadata and board facts without materializing the unselected roster", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    setRuntimeConfigSnapshot(cfg);
+  await withListState(async () => {
     const writeSelection = (published: boolean) => {
       for (let index = 0; index < 70; index++) {
         writeRow(`agent:main:dashboard:selection-${index}`, {
@@ -332,14 +327,13 @@ it("selects fresh metadata and board facts without materializing the unselected 
         onResult: () => (count = projection.materializedCount - before),
       },
     );
-    expect(selected.sessions).toEqual([
-      expect.objectContaining({ key, sessionId: "selection-0", label: "After publication" }),
+    expect(selected.sessions).toMatchObject([
+      { key, sessionId: "selection-0", label: "After publication" },
     ]);
     expect(count).toBe(1);
     expect(selected.totalCount).toBe(1);
     const old = await listRows(projection, { limit: 1, search: "old-model" });
-    expect(old.totalCount).toBe(0);
-    expect(old.sessions).toEqual([]);
+    expect(old).toMatchObject({ totalCount: 0, sessions: [] });
     const withoutBoard = await listRows(projection, { limit: 1, hasBoard: false });
     expect(withoutBoard.sessions.map((row) => row.sessionId)).toEqual(["selection-1"]);
   });
