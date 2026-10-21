@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { isBuiltin } from "node:module";
 import path from "node:path";
@@ -248,10 +249,29 @@ function createPluginGenerationArtifact(
           : destination;
       const link = path.join(lookupDirectory, "node_modules", name);
       packages.get(dependency.root)!.links.add(link);
-      if (!fs.existsSync(link)) {
+      try {
+        const linkStat = fs.lstatSync(link, { throwIfNoEntry: false });
+        const previous = linkStat?.isSymbolicLink() && fs.readlinkSync(link);
+        // copyPackage has already materialized the intended target.
+        const sameTarget = previous && path.resolve(path.dirname(link), previous) === captured;
+        if (linkStat && (!previous || sameTarget)) {
+          return;
+        }
         fs.mkdirSync(path.dirname(link), { recursive: true, mode: 0o700 });
-        fs.symlinkSync(path.relative(path.dirname(link), captured), link, "junction");
-        additions.add(link);
+        // Stage replacements so failures leave the original junction intact.
+        const staged = `${link}.${randomUUID()}.tmp`;
+        try {
+          fs.symlinkSync(path.relative(path.dirname(link), captured), staged, "junction");
+          fs.renameSync(staged, link);
+          additions.add(link);
+        } finally {
+          fs.rmSync(staged, { force: true });
+        }
+        if (linkStat) {
+          process.emitWarning(`Replacing plugin dependency link ${link}`);
+        }
+      } catch (error) {
+        process.emitWarning(`Could not prepare plugin dependency link ${link}: ${String(error)}`);
       }
     };
     const scopes = metadataCapture.createScope({

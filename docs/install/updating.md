@@ -144,6 +144,12 @@ and recovery or migration backups remain with their existing durable owners;
 `TMPDIR` does not relocate those writes or remove the need for free space on the
 installation and state filesystems.
 
+Plugin source capture repairs stale dependency links without changing real
+dependency directories. Replacement links are staged before publication so a
+failed replacement preserves the previous link. A link pointing elsewhere or a
+filesystem failure produces a warning; other dependencies can still be prepared.
+This repair applies when the candidate loads plugin contracts during Doctor.
+
 ### Migration integrity checks
 
 SQLite upgrades default to a whole-database `quick_check`, a full

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
@@ -101,4 +102,117 @@ it("leaves a looping TypeScript sibling unresolved during capture", async () => 
   const artifact = resources.keep(capturePluginGenerationArtifact(root, entry));
   expect(artifact.hasSource(entry)).toBe(true);
   expect(artifact.hasSource(path.join(root, "value.ts"))).toBe(false);
+});
+
+function fixture(resources: ReturnType<typeof captureResources>) {
+  const root = temp.make("capture-dependency-links-");
+  writeTree(root, {
+    "package.json": { name: "fixture", dependencies: { dependency: "*", sibling: "*" } },
+    "index.cjs": "exports.ready = true;",
+    "node_modules/dependency/package.json": { name: "dependency", main: "index.cjs" },
+    "node_modules/dependency/index.cjs": "module.exports = 'captured dependency';",
+    "node_modules/sibling/package.json": { name: "sibling", main: "index.cjs" },
+    "node_modules/sibling/index.cjs": "module.exports = 'unaffected sibling';",
+  });
+  const artifact = resources.keep(
+    capturePluginGenerationArtifact(root, path.join(root, "index.cjs"), (run) => run()),
+  );
+  const entry = artifact.resolve(path.join(root, "index.cjs"));
+  const link = path.join(artifact.rootDir, "node_modules", "dependency");
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  return { artifact, entry, link, root };
+}
+
+it.each(["relative symlink", "absolute junction"])(
+  "atomically repairs a dangling %s before loading captured dependencies",
+  async (layout) => {
+    await using resources = captureResources();
+    const { artifact, entry, link, root } = fixture(resources);
+    const disposed = path.join(root, "disposed-capture");
+    fs.symlinkSync(
+      layout === "absolute junction" ? disposed : path.relative(path.dirname(link), disposed),
+      link,
+      layout === "absolute junction" ? "junction" : "dir",
+    );
+    expect(fs.existsSync(link)).toBe(false);
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+    const rename = fs.renameSync;
+    let publishedAtomically = false;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (to === link) {
+        // Replacement is ready while the original entry still exists, including a junction.
+        expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+        expect(fs.readFileSync(path.join(String(from), "index.cjs"), "utf8")).toContain(
+          "captured dependency",
+        );
+        publishedAtomically = true;
+      }
+      rename(from, to);
+    });
+
+    const additions = artifact.prepareDependency(entry, "dependency");
+    expect(additions).toContain(link);
+    expect(publishedAtomically).toBe(true);
+    expect(createRequire(entry)("dependency")).toBe("captured dependency");
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("Replacing"));
+    artifact.prepareNativeScopes(entry);
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(createRequire(entry)("sibling")).toBe("unaffected sibling");
+  },
+);
+
+it("replaces a live link to another target without changing that target", async () => {
+  await using resources = captureResources();
+  const { artifact, entry, link, root } = fixture(resources);
+  const previous = path.join(root, "previous");
+  writeTree(previous, {
+    "package.json": { main: "index.cjs" },
+    "index.cjs": "module.exports = 'previous dependency';",
+  });
+  fs.symlinkSync(previous, link, "junction");
+  const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+
+  artifact.prepareDependency(entry, "dependency");
+  expect(createRequire(entry)("dependency")).toBe("captured dependency");
+  expect(fs.readFileSync(path.join(previous, "index.cjs"), "utf8")).toContain(
+    "previous dependency",
+  );
+  expect(warning).toHaveBeenCalledWith(expect.stringContaining("Replacing"));
+});
+
+it("preserves a real dependency directory", async () => {
+  await using resources = captureResources();
+  const { artifact, entry, link } = fixture(resources);
+  writeTree(link, {
+    "package.json": { main: "index.cjs" },
+    "index.cjs": "module.exports = 'nested install';",
+  });
+  const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+
+  artifact.prepareDependency(entry, "dependency");
+  expect(fs.lstatSync(link).isDirectory()).toBe(true);
+  expect(createRequire(entry)("dependency")).toBe("nested install");
+  expect(warning).not.toHaveBeenCalled();
+});
+
+it("warns on a failed link replacement and still prepares sibling dependencies", async () => {
+  await using resources = captureResources();
+  const { artifact, entry, link, root } = fixture(resources);
+  fs.symlinkSync(path.join(root, "disposed-capture"), link, "junction");
+  const original = fs.readlinkSync(link);
+  const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+  const rename = fs.renameSync;
+  vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    if (to === link) {
+      throw Object.assign(new Error("junction is busy"), { code: "EPERM" });
+    }
+    rename(from, to);
+  });
+
+  expect(() => artifact.prepareDependency(entry, "dependency")).not.toThrow();
+  expect(fs.readlinkSync(link)).toBe(original);
+  expect(fs.readdirSync(path.dirname(link))).toEqual(["dependency"]);
+  expect(warning).toHaveBeenCalledWith(expect.stringContaining("junction is busy"));
+  artifact.prepareDependency(entry, "sibling");
+  expect(createRequire(entry)("sibling")).toBe("unaffected sibling");
 });
