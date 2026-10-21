@@ -60,7 +60,9 @@ import {
   watchRowFacts as observeRowFacts,
 } from "./session-row-projection.read-fixture.test-support.js";
 import {
+  acpProjectionMeta,
   requestSessionRow,
+  seedProjectionRow,
   withSessionRowProjectionState,
 } from "./session-row-projection.test-support.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
@@ -285,13 +287,14 @@ it("refuses held row facts after configured-alias close", async ({ signal }) => 
     fs.symlinkSync(state.root, aliasDirectory, process.platform === "win32" ? "junction" : "dir");
     const storePath = path.join(aliasDirectory, "sessions.sqlite");
     const query = { agentId: "main", key: "agent:main:shared-source-replacement" };
-    replaceSessionEntrySync(
-      { agentId: query.agentId, sessionKey: query.key, storePath },
+    seedProjectionRow(
+      query.key,
       {
         sessionId: "shared-source",
         lifecycleRevision: "first",
-        updatedAt: 1,
       },
+      query.agentId,
+      storePath,
     );
     const databasePath = resolveOpenClawStateSqlitePath(state.env);
     seedCanonicalAcpSessionMeta({
@@ -299,14 +302,7 @@ it("refuses held row facts after configured-alias close", async ({ signal }) => 
       env: state.env,
       sessionKey: query.key,
       lifecycleRevision: "first",
-      meta: {
-        backend: "original",
-        agent: "main",
-        runtimeSessionName: "shared-source",
-        mode: "persistent",
-        state: "idle",
-        lastActivityAt: 1,
-      },
+      meta: acpProjectionMeta("original", "shared-source"),
     });
     await closeOpenClawStateDatabaseAsync();
     const projection = await create({
@@ -818,14 +814,9 @@ it("keeps the stored main address and ACP runtime after mainKey changes", async 
     await state.writeConfig(cfgBefore);
     state.applyEnv();
     replaceSessionEntrySync(target, entry);
-    const meta = {
-      backend: "fixture-backend",
+    const meta = acpProjectionMeta("fixture-backend", "stored-main-runtime", 2, {
       agent: "fixture-harness",
-      runtimeSessionName: "stored-main-runtime",
-      mode: "persistent" as const,
-      state: "idle" as const,
-      lastActivityAt: 2,
-    };
+    });
     expect(
       await upsertAcpSessionMeta({
         ...target,
@@ -896,14 +887,7 @@ it("refreshes prepared ACP metadata on publication and fences replacement lifecy
       seedCanonicalAcpSessionMeta({
         sessionKey: key.toUpperCase(),
         lifecycleRevision: "first",
-        meta: {
-          backend,
-          agent: "main",
-          runtimeSessionName: "worker-row",
-          mode: "persistent",
-          state: "idle",
-          lastActivityAt: 1,
-        },
+        meta: acpProjectionMeta(backend, "worker-row"),
       });
       const reads = observeSqliteReadSql(StatementSync.prototype);
       try {

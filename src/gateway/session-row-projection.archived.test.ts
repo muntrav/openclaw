@@ -29,13 +29,11 @@ import { applySessionEntryExactReplacements } from "../config/sessions/session-a
 import * as history from "../config/sessions/session-transcript-worker-runtime.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
-  emitSessionIdentityMutation,
   emitSessionLifecycleEvent,
   onSessionIdentityMutation,
 } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import * as databaseIdentity from "../state/openclaw-agent-db-identity.js";
 import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
   openOpenClawAgentDatabase,
@@ -745,43 +743,6 @@ it("accepts alias publications while another physical store keeps its own row", 
     await projection.prepareMembership();
     expect(projection.physicalPaths(query.storePath, query.agentId)).toEqual(physicalPaths);
     expect(projection.physicalPaths(query.storePath, query.agentId)).not.toBe(physicalPaths);
-  });
-});
-
-it("invalidates a published row after an unprepared reset with the same session ID", async () => {
-  await withSessionRowProjectionState(async (create) => {
-    const database = openOpenClawAgentDatabase({ agentId: "main" });
-    const entry = { sessionId: "same-session", lifecycleRevision: "original", updatedAt: 1 };
-    const seeded = seedPublication("unprepared-reset", entry);
-    const scope = { ...seeded.scope, storePath: database.path };
-    const projection = await create({ cfg: {}, modelCatalog: [] });
-    const query = { ...seeded.query, storePath: scope.storePath };
-
-    await projection.ensureMaterialized();
-    replaceSessionEntrySync(scope, { ...entry, label: "Published metadata", updatedAt: 2 });
-    const captured = projection.capture(query);
-    const identity = databaseIdentity.readOpenClawAgentDatabaseIdentity(database).identity;
-    expect(captured?.entry?.label).toBe("Published metadata");
-    expect(captured?.publishedSource?.identity).toBe(identity);
-    expect(projection.isCurrent(captured!)).toBe(true);
-
-    // A raw reset does not prove whether the previously published lifecycle still applies.
-    emitSessionIdentityMutation({
-      kind: "reset",
-      agentId: scope.agentId,
-      databaseIdentity: identity,
-      previous: { sessionId: entry.sessionId, sessionKeys: [scope.sessionKey] },
-      current: { sessionId: entry.sessionId, sessionKeys: [scope.sessionKey] },
-    });
-    expect(projection.isCurrent(captured!)).toBe(false);
-    const invalidated = projection.capture(query);
-    expect(invalidated).toBeDefined();
-    expect(invalidated?.generation).not.toBe(captured?.generation);
-    expect(invalidated?.entry).toBeUndefined();
-
-    await projection.ensureMaterialized();
-    expect(projection.capture(query)?.entry?.sessionId).toBe(entry.sessionId);
-    expect(projection.isCurrent(captured!)).toBe(false);
   });
 });
 

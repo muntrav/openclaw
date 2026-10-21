@@ -13,7 +13,6 @@ import {
   resolveSqliteTranscriptReadScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import type { SessionEntry } from "../config/sessions/types.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
@@ -42,6 +41,10 @@ import {
   createTestProjection,
   holdForeground,
 } from "./session-row-projection.read-fixture.test-support.js";
+import {
+  appendProjectionMessages as appendTranscript,
+  seedProjectionRow as seedTranscriptRow,
+} from "./session-row-projection.test-support.js";
 import * as transcriptBackfill from "./session-row-transcript-backfill.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -49,22 +52,6 @@ afterEach(() => vi.restoreAllMocks());
 type TranscriptMessage = Parameters<
   typeof persistSessionTranscriptTurn
 >[1]["messages"][number]["message"];
-
-function appendTranscript(
-  target: Parameters<typeof persistSessionTranscriptTurn>[0],
-  ...messages: TranscriptMessage[]
-) {
-  return persistSessionTranscriptTurn(target, {
-    messages: messages.map((message) => ({ message })),
-    touchSessionEntry: false,
-  });
-}
-
-function seedTranscriptRow(sessionId: string, entry: Partial<SessionEntry> = {}) {
-  const target = { agentId: "main", sessionKey: `agent:main:${sessionId}`, sessionId };
-  replaceSessionEntrySync(target, { sessionId, updatedAt: 1, ...entry });
-  return { target, query: { agentId: target.agentId, key: target.sessionKey } };
-}
 
 const cfg = { agents: { entries: { main: {} } } };
 const display = { includeDerivedTitles: true, includeLastMessage: true };
@@ -196,20 +183,23 @@ it("enriches a pre-assistant preview cache without changing settings or transcri
     const database = openOpenClawAgentDatabase(
       toDatabaseOptions(resolveSqliteTranscriptReadScope(target)),
     ).db;
-    const transcriptRows = database
-      .prepare(
-        "SELECT seq, event_json, event_zstd FROM transcript_events WHERE session_id = ? ORDER BY seq",
-      )
-      .all(target.sessionId);
+    const readTranscript = () =>
+      database
+        .prepare(
+          "SELECT seq, event_json, event_zstd FROM transcript_events WHERE session_id = ? ORDER BY seq",
+        )
+        .all(target.sessionId);
+    const transcriptRows = readTranscript();
     const readCache = () =>
       database
         .prepare("SELECT row_transcript_json FROM session_windows WHERE session_id = ?")
         .get(target.sessionId)?.row_transcript_json as string | undefined;
-    const stored = JSON.parse(readCache() ?? "null") as Record<string, unknown>;
-    expect(stored).toMatchObject({
+    const preview = {
       lastMessagePreview: "Existing reply",
       lastAssistantMessage: { text: "Existing reply", timestamp: 200 },
-    });
+    };
+    const stored = JSON.parse(readCache() ?? "null") as Record<string, unknown>;
+    expect(stored).toMatchObject(preview);
     delete stored.lastAssistantMessage;
     database
       .prepare("UPDATE session_windows SET row_transcript_json = ? WHERE session_id = ?")
@@ -226,31 +216,18 @@ it("enriches a pre-assistant preview cache without changing settings or transcri
       await withinTest(enriched, signal);
       expect(projection.snapshot(query, { includeLastMessage: true }).row).toMatchObject({
         displayName: "Existing session setting",
-        lastMessagePreview: "Existing reply",
-        lastAssistantMessage: { text: "Existing reply", timestamp: 200 },
+        ...preview,
       });
     }
-    expect(JSON.parse(readCache() ?? "null")).toMatchObject({
-      lastMessagePreview: "Existing reply",
-      lastAssistantMessage: { text: "Existing reply", timestamp: 200 },
-    });
+    expect(JSON.parse(readCache() ?? "null")).toMatchObject(preview);
     expect(loadSessionEntry(target)).toEqual(entry);
     expect(getUserPreferences("existing-profile")).toEqual(settings);
-    expect(
-      database
-        .prepare(
-          "SELECT seq, event_json, event_zstd FROM transcript_events WHERE session_id = ? ORDER BY seq",
-        )
-        .all(target.sessionId),
-    ).toEqual(transcriptRows);
+    expect(readTranscript()).toEqual(transcriptRows);
 
     const backfill = vi.spyOn(transcriptBackfill, "backfillSessionRowTranscriptFields");
     using reopened = await createTestProjection({ cfg, modelCatalog: [] });
     await reopened.ensureMaterialized();
-    expect(reopened.snapshot(query, { includeLastMessage: true }).row).toMatchObject({
-      lastMessagePreview: "Existing reply",
-      lastAssistantMessage: { text: "Existing reply", timestamp: 200 },
-    });
+    expect(reopened.snapshot(query, { includeLastMessage: true }).row).toMatchObject(preview);
     await nextTurn();
     expect(backfill).not.toHaveBeenCalled();
   });

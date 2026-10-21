@@ -6,7 +6,14 @@ import {
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { GatewayStoredSessionTargets } from "../config/sessions/combined-store-model-sources.js";
-import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
+import {
+  replaceSessionEntrySync,
+  persistSessionTranscriptTurn,
+} from "../config/sessions/session-accessor.js";
+import type {
+  InternalSessionEntry as SessionEntry,
+  SessionAcpMeta,
+} from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   isIncognitoSessionKey,
@@ -47,6 +54,55 @@ import {
 import type { SessionTitleFields } from "./session-utils.types.js";
 
 type Row = NonNullable<ReturnType<SessionRowProjection["describe"]>>;
+
+export function seedProjectionRow(
+  name: string,
+  fields: Partial<SessionEntry> = {},
+  agentId = "main",
+  storePath?: string,
+) {
+  const entry = { sessionId: name, updatedAt: 1, ...fields };
+  const scope = {
+    agentId,
+    sessionKey: name.startsWith("agent:") ? name : `agent:${agentId}:${name}`,
+    sessionId: entry.sessionId,
+    storePath,
+  };
+  replaceSessionEntrySync(scope, entry);
+  return {
+    scope,
+    target: scope,
+    query: { agentId, key: scope.sessionKey, ...(storePath === undefined ? {} : { storePath }) },
+    entry,
+  };
+}
+
+export function appendProjectionMessages(
+  scope: Parameters<typeof persistSessionTranscriptTurn>[0],
+  ...messages: Parameters<typeof persistSessionTranscriptTurn>[1]["messages"][number]["message"][]
+) {
+  return persistSessionTranscriptTurn(scope, {
+    messages: messages.map((message) => ({ message })),
+    touchSessionEntry: false,
+  });
+}
+
+export function acpProjectionMeta(
+  backend: string,
+  runtimeSessionName: string,
+  lastActivityAt = 1,
+  extra: Partial<SessionAcpMeta> = {},
+): SessionAcpMeta {
+  return {
+    backend,
+    agent: "main",
+    runtimeSessionName,
+    mode: "persistent",
+    state: "idle",
+    lastActivityAt,
+    ...extra,
+  };
+}
 
 export function withSessionRowProjectionState(
   run: (
