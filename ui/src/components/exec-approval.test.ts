@@ -1,11 +1,10 @@
 /* @vitest-environment jsdom */
 
-import { createComponent, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { ExecApprovalRequest } from "../app/exec-approval.ts";
 import { i18n } from "../i18n/index.ts";
 import { getRenderedModalDialog, installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
-import { mountSolid } from "../test-helpers/mount-solid.ts";
+import { mountSolid } from "../test-helpers/solid-render.tsx";
 import { flush } from "../test-helpers/solid-settle.ts";
 import {
   ExecApproval,
@@ -15,7 +14,7 @@ import {
 
 let container: HTMLDivElement;
 let restoreDialogPolyfill: () => void;
-let setProps: ((props: ExecApprovalProps) => void) | undefined;
+let update: ((props: { props: ExecApprovalProps }) => void) | undefined;
 const query = (selector: string) => container.querySelector<HTMLElement>(selector);
 const activeId = () => query(".exec-approval-card")?.getAttribute("data-approval-id");
 
@@ -34,14 +33,10 @@ function createExecRequest(overrides: Partial<ExecApprovalRequest> = {}): ExecAp
 }
 
 async function renderApproval(
-  requestOrQueue: ExecApprovalRequest | ExecApprovalRequest[],
-  overrides: Partial<{
-    busy: boolean;
-    connected: boolean;
-    canGrant: boolean;
-    errors: ReadonlyMap<string, string>;
-    onDecision: Mock<ExecApprovalProps["onDecision"]>;
-  }> = {},
+  requestOrQueue: ExecApprovalRequest | ExecApprovalRequest[] = createExecRequest(),
+  overrides: Partial<Omit<ExecApprovalProps, "queue" | "onDecision">> & {
+    onDecision?: Mock<ExecApprovalProps["onDecision"]>;
+  } = {},
 ) {
   const queue = Array.isArray(requestOrQueue) ? requestOrQueue : [requestOrQueue];
   const onDecision = overrides.onDecision ?? vi.fn<ExecApprovalProps["onDecision"]>();
@@ -53,23 +48,11 @@ async function renderApproval(
     errors: overrides.errors ?? new Map(),
     onDecision,
   };
-  if (setProps) {
-    setProps(props);
+  if (update) {
+    update({ props });
   } else {
-    mountSolid(
-      () => {
-        const [current, setCurrent] = createSignal(props);
-        setProps = setCurrent;
-        return createComponent(ExecApproval, {
-          get props() {
-            return current();
-          },
-        });
-      },
-      { container },
-    );
+    update = mountSolid(ExecApproval, { props }, container).update;
   }
-  flush();
   const approval = container.querySelector<ExecApprovalElement>("openclaw-exec-approval");
   if (!approval) {
     throw new Error("Expected exec approval");
@@ -79,7 +62,7 @@ async function renderApproval(
 }
 
 async function renderOpenedApproval(
-  requestOrQueue: ExecApprovalRequest | ExecApprovalRequest[],
+  requestOrQueue: ExecApprovalRequest | ExecApprovalRequest[] = createExecRequest(),
   overrides: Parameters<typeof renderApproval>[1] = {},
 ) {
   const rendered = await renderApproval(requestOrQueue, overrides);
@@ -101,7 +84,7 @@ describe("openclaw-exec-approval", () => {
   });
 
   afterEach(async () => {
-    setProps = undefined;
+    update = undefined;
     vi.useRealTimers();
     container.remove();
     await i18n.setLocale("en");
@@ -205,18 +188,38 @@ describe("openclaw-exec-approval", () => {
     );
   });
 
-  it("handles modal approval keyboard shortcuts", async () => {
-    const { onDecision, modal } = await renderOpenedApproval(createExecRequest());
-
-    modal.dispatchEvent(chord("Enter"));
-    modal.dispatchEvent(chord("Enter", { shiftKey: true }));
-    modal.dispatchEvent(chord("в", { code: "KeyD", metaKey: false, ctrlKey: true }));
-
-    expect(onDecision.mock.calls).toEqual([
-      ["approval-1", "allow-once"],
-      ["approval-1", "allow-always"],
-      ["approval-1", "deny"],
-    ]);
+  it.each([
+    [
+      "approval chords",
+      [
+        ["Enter", {}],
+        ["Enter", { shiftKey: true }],
+        ["в", { code: "KeyD", metaKey: false, ctrlKey: true }],
+      ],
+      ["allow-once", "allow-always", "deny"],
+    ],
+    [
+      "bare keys and alt chords",
+      [
+        ["a", { metaKey: false }],
+        ["Enter", { metaKey: false }],
+        ["d", { metaKey: false }],
+        ["Enter", { altKey: true }],
+      ],
+      [],
+    ],
+    [
+      "auto-repeat",
+      [
+        ["Enter", { repeat: true }],
+        ["Enter", { shiftKey: true, repeat: true }],
+      ],
+      [],
+    ],
+  ] as const)("handles %s without unintended decisions", async (_name, events, decisions) => {
+    const { onDecision, modal } = await renderOpenedApproval();
+    events.forEach(([key, init]) => modal.dispatchEvent(chord(key, init)));
+    expect(onDecision.mock.calls).toEqual(decisions.map((decision) => ["approval-1", decision]));
   });
 
   it.each([true, false])(
@@ -246,26 +249,6 @@ describe("openclaw-exec-approval", () => {
       expect(onDecision).not.toHaveBeenCalled();
     },
   );
-
-  it("ignores bare keys so stray typing cannot authorize a command", async () => {
-    const { onDecision, modal } = await renderOpenedApproval(createExecRequest());
-
-    modal.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
-    modal.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    modal.dispatchEvent(new KeyboardEvent("keydown", { key: "d", bubbles: true }));
-    modal.dispatchEvent(chord("Enter", { altKey: true }));
-
-    expect(onDecision).not.toHaveBeenCalled();
-  });
-
-  it("ignores auto-repeated shortcut keydown events", async () => {
-    const { onDecision, modal } = await renderOpenedApproval(createExecRequest());
-
-    modal.dispatchEvent(chord("Enter", { repeat: true }));
-    modal.dispatchEvent(chord("Enter", { shiftKey: true, repeat: true }));
-
-    expect(onDecision).not.toHaveBeenCalled();
-  });
 
   it("keeps the displayed approval pinned when an older request arrives", async () => {
     const newer = createExecRequest({ id: "approval-newer", createdAtMs: 2_000 });
@@ -328,7 +311,7 @@ describe("openclaw-exec-approval", () => {
   // Settings Escape guards read this fact; a pending queue alone must not
   // report an open dialog now that approvals surface passively.
   it("records dialogOpen only while the dialog is explicitly open", async () => {
-    const { approval, onDecision } = await renderApproval(createExecRequest());
+    const { approval, onDecision } = await renderApproval();
     const opener = document.createElement("button");
     container.append(opener);
     opener.focus();
@@ -358,14 +341,14 @@ describe("openclaw-exec-approval", () => {
   });
 
   it("closes and resets after the approval queue drains", async () => {
-    await renderOpenedApproval(createExecRequest());
+    await renderOpenedApproval();
     expect(container.querySelector("openclaw-modal-dialog")).not.toBeNull();
 
     let rendered = await renderApproval([]);
     await rendered.approval.updateComplete;
     expect(container.querySelector("openclaw-modal-dialog")).toBeNull();
 
-    rendered = await renderApproval(createExecRequest());
+    rendered = await renderApproval();
     await rendered.approval.updateComplete;
 
     expect(container.querySelector("openclaw-modal-dialog")).toBeNull();

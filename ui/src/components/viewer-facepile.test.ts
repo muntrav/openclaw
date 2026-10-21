@@ -19,6 +19,7 @@ import { createContext, createGateway, createSessions } from "../test-helpers/ap
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../test-helpers/gateway-methods.ts";
 import { cleanupSolid, mountSolid } from "../test-helpers/mount-solid.ts";
+import { sessionOwnerProfiles } from "../test-helpers/session-owner-menu.ts";
 import {
   createApplicationGateway,
   createSolidApplicationContextProvider,
@@ -92,22 +93,9 @@ it.each(["session", "profile"] as const)(
 it("uses the same user initials and identity hue in the roster and attributed chat", async () => {
   const user = viewer("profile-riley", "Riley", { email: "riley@example.test" });
   const viewerAvatar = mountAvatar(user);
-
-  const chat = document.createElement("div");
-  document.body.append(chat);
-  mountSolid(
-    () =>
-      createComponent(ChatAuthorAvatar, {
-        sender: { id: user.id, name: user.name, username: user.email },
-      }),
-    { container: chat },
-  );
-
-  const expected = resolveAvatarInitials({
-    id: user.id,
-    name: user.name,
-    username: user.email,
-  });
+  const sender = { id: user.id, name: user.name, username: user.email };
+  const chat = mountSolid(() => createComponent(ChatAuthorAvatar, { sender })).container;
+  const expected = resolveAvatarInitials(sender);
   await expectUpdated(viewerAvatar, () => {
     const rosterInitials = viewerAvatar.querySelector<HTMLElement>(".viewer-avatar > span");
     const chatInitials = chat.querySelector(".chat-author-avatar__initials");
@@ -122,28 +110,23 @@ it("uses the same user initials and identity hue in the roster and attributed ch
   });
 });
 
-it("uses the shared resolver and rejects cross-origin presence avatar metadata", async () => {
-  const avatar = mountAvatar(
-    viewer("profile-mallory", "Mallory", {
-      avatarUrl: "https://evil.example/avatar.png",
-    }),
-  );
-  await expectUpdated(avatar, () => {
-    expect(avatar.querySelector("img")).toBeNull();
-    expect(avatar.textContent?.trim()).toBe("M");
-  });
-});
-
-it("renders trusted presence avatar routes directly", async () => {
-  const avatar = mountAvatar(
-    viewer("profile-ada", "Ada Lovelace", {
-      avatarUrl: "/api/users/profile-ada/avatar",
-    }),
-  );
-  await expectUpdated(avatar, () => {
-    expect(avatar.querySelector("img")?.getAttribute("src")).toBe("/api/users/profile-ada/avatar");
-  });
-});
+it.each([
+  ["mallory", "Mallory", "https://evil.example/avatar.png", false],
+  ["ada", "Ada Lovelace", "/api/users/profile-ada/avatar", true],
+] as const)(
+  "resolves %s presence artwork through the trusted boundary",
+  async (id, name, url, trusted) => {
+    const avatar = mountAvatar(viewer(`profile-${id}`, name, { avatarUrl: url }));
+    await expectUpdated(avatar, () => {
+      if (trusted) {
+        expect(attr(avatar, "img", "src")).toBe(url);
+      } else {
+        expect(avatar.querySelector("img")).toBeNull();
+        expect(avatar.textContent?.trim()).toBe("M");
+      }
+    });
+  },
+);
 
 it("keeps qualified and unqualified prepared presence faces distinct", async () => {
   const id = "c3e32452-0467-47e5-aafa-233cd5dae29f";
@@ -445,19 +428,9 @@ it("keeps a newly advertised teammate avatar ahead of cached directory availabil
     phase: "connected",
     hello: gatewayHelloForMethods(["users.list"], ["operator.read"]),
     client: createTestGatewayClient(async () => ({
-      profiles: [
-        {
-          id: "teammate",
-          displayName: "Teammate",
-          hasAvatar: true,
-          updatedAt: 7,
-          createdAt: 1,
-          avatarMime: null,
-          mergedInto: null,
-          emails: [],
-          githubIdentity: null,
-        },
-      ],
+      profiles: sessionOwnerProfiles("Teammate").profiles.map((profile) =>
+        Object.assign(profile, { id: "teammate", hasAvatar: true, updatedAt: 7 }),
+      ),
     })),
   });
   const provider = avatarProvider(gateway);

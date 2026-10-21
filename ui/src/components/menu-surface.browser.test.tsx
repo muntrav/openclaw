@@ -2,8 +2,11 @@ import { createComponent, createSignal } from "solid-js";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { subscribeNativeOverlayOcclusion } from "../lib/native-overlay-occlusion.ts";
 import { BrowserTabCardHost } from "../pages/chat/components/browser-tab-card.tsx";
-import { createChatAttachmentInputHandle } from "../pages/chat/components/chat-attachment-inputs.ts";
 import { composerLibraryMenuItems } from "../pages/chat/components/chat-composer-library-menu.tsx";
+import {
+  makeCapabilities,
+  makeMenu,
+} from "../pages/chat/components/chat-composer-menu.test-support.ts";
 import { renderComposerMenuOption as ComposerMenuOption } from "../pages/chat/components/chat-composer-menu.tsx";
 import { ChatComposerPlusMenu } from "../pages/chat/components/chat-composer-plus-menu.tsx";
 import { cleanupSolid, mountSolid } from "../test-helpers/mount-solid.ts";
@@ -337,38 +340,10 @@ describe.skipIf(!hasPopoverApi)("platform menu hover", () => {
     "matches attachment and capability actions in %s mode",
     async (theme) => {
       const { host, page, highlight } = await themeFixture(theme, "400px 40px 0");
-      const inputHandle = createChatAttachmentInputHandle();
       mountSolid(
         () => (
           <ChatComposerPlusMenu
-            menu={{
-              attachments: {},
-              inputHandle,
-              disabled: false,
-              open: false,
-              view: "root",
-              toolOverrides: null,
-              onOpenChange: () => {},
-              onViewChange: () => {},
-              capabilityMenu: {
-                basePath: "",
-                skills: [],
-                skillsLoading: false,
-                skillsError: false,
-                mcpServers: [],
-                toolsEffectiveResult: null,
-                toolsEffectiveLoading: false,
-                toolsEffectiveError: false,
-                toolAccessMutationBlockedReason: null,
-                webSearchBaseEnabled: true,
-                mutationBlockedReason: null,
-                canAdmin: true,
-                adminBlockedReason: null,
-                onLoadSkills: () => {},
-                onPatchToolOverrides: () => {},
-                onNavigate: () => {},
-              },
-            }}
+            menu={makeMenu({ capabilityMenu: makeCapabilities({ basePath: "" }) })}
           />
         ),
         { container: host },
