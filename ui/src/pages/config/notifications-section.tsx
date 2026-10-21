@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { For, Show } from "solid-js";
+import { action, createOptimistic, For, Show } from "solid-js";
 import type {
   WebPushDevicePreferences,
   WebPushNotificationPreferences,
@@ -408,7 +408,12 @@ function NativeNotificationSection(props: {
   actions: NotificationsSectionProps;
 }) {
   const status = () => nativeNotificationsStatus(props.native.permission);
-  const testPending = () => props.native.test?.state === "pending";
+  const [sending, setSending] = createOptimistic(false);
+  const testPending = () => sending() || props.native.test?.state === "pending";
+  const sendTest = action(function* () {
+    setSending(true);
+    yield props.actions.onNativeNotificationsSendTest?.();
+  });
   const testDescription = () => {
     const test = props.native.test;
     return test?.state === "error" ? test.message : undefined;
@@ -431,11 +436,7 @@ function NativeNotificationSection(props: {
       >
         <NotificationActions>
           {props.native.permission === "granted" ? (
-            <button
-              class="btn primary"
-              disabled={testPending()}
-              onClick={() => props.actions.onNativeNotificationsSendTest?.()}
-            >
+            <button class="btn primary" disabled={testPending()} onClick={() => void sendTest()}>
               <Icon name={testPending() ? "loader" : "send"} />
               {testPending()
                 ? t("configView.notifications.sendingTest")
