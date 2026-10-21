@@ -503,7 +503,11 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
                 api: "openai-completions",
                 models: [
                   {
-                    ...catalogModel("configured", "Configured", 10000, 1000),
+                    id: "configured",
+                    name: "Configured",
+                    input: ["text"],
+                    contextWindow: 10000,
+                    maxTokens: 1000,
                     reasoning: false,
                     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
                   },

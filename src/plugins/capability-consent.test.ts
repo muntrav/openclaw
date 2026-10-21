@@ -409,29 +409,50 @@ it.each(["missing", "invalid"])(
   },
 );
 
-it("requires Claw-owner review despite unchanged current acceptance", async () => {
-  const rootDir = createArtifactFixture(pluginFiles("plugin", { contracts: { tools: ["read"] } }));
-  const options = {
-    requireCapabilityConsent: true,
-    previousRecords: { plugin: acceptedRecord(rootDir, "sha512-current") },
-  };
-  const artifact = makeArtifact(rootDir, "plugin", "update");
-  await expect(createConsent(options).onBeforePluginArtifactCommit(artifact)).rejects.toMatchObject(
-    {
-      capabilityConsent: { pluginId: "plugin" },
-    },
-  );
-  const consent = reviewedConsent(options);
-  await consent.onBeforePluginArtifactCommit(artifact);
-  expect(
-    consent.reviews.map(({ reviewToken, declared }) => ({ reviewToken, tools: declared.tools })),
-  ).toEqual([
-    {
-      reviewToken: computeDeclaredSurfaceHash(resolvePluginArtifactDeclaredSurface(rootDir)),
-      tools: ["read"],
-    },
-  ]);
-});
+it.each(["current acceptance", "official provenance"] as const)(
+  "requires Claw-owner review despite %s",
+  async (basis) => {
+    const official = basis === "official provenance";
+    const pluginId = official ? "acpx" : "plugin";
+    const tools = [official ? "acpx.run" : "read"];
+    const rootDir = createArtifactFixture(
+      pluginFiles(pluginId, { contracts: { tools } }, official ? "@openclaw/acpx" : undefined),
+    );
+    const sourceRecord: PluginInstallRecord = {
+      source: "clawhub",
+      spec: "clawhub:@openclaw/acpx",
+      clawhubPackage: "@openclaw/acpx",
+      clawhubUrl: "https://clawhub.ai",
+      clawhubChannel: "official",
+    };
+    const artifact = {
+      pluginId,
+      stagedArtifactDir: rootDir,
+      mode: official ? ("install" as const) : ("update" as const),
+      ...(official ? { sourceRecord } : {}),
+    };
+    const options = official
+      ? { source: "clawhub" as const, spec: sourceRecord.spec }
+      : { previousRecords: { plugin: acceptedRecord(rootDir, "sha512-current") } };
+    if (official) {
+      await createConsent(options).onBeforePluginArtifactCommit(artifact);
+    }
+    const required = { ...options, requireCapabilityConsent: true };
+    await expect(
+      createConsent(required).onBeforePluginArtifactCommit(artifact),
+    ).rejects.toMatchObject({ capabilityConsent: { pluginId } });
+    const consent = reviewedConsent(required);
+    await consent.onBeforePluginArtifactCommit(artifact);
+    expect(
+      consent.reviews.map(({ reviewToken: token, declared }) => ({ token, tools: declared.tools })),
+    ).toEqual([
+      {
+        token: computeDeclaredSurfaceHash(resolvePluginArtifactDeclaredSurface(rootDir)),
+        tools,
+      },
+    ]);
+  },
+);
 
 it("rejects reinstall without capability consent even when the plugin is disabled", async () => {
   const rootDir = createArtifactFixture(pluginFiles("plugin"));

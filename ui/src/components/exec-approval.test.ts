@@ -40,7 +40,7 @@ async function renderApproval(
 ) {
   const queue = Array.isArray(requestOrQueue) ? requestOrQueue : [requestOrQueue];
   const onDecision = overrides.onDecision ?? vi.fn<ExecApprovalProps["onDecision"]>();
-  const props = {
+  const props: ExecApprovalProps = {
     queue,
     busy: overrides.busy ?? false,
     connected: overrides.connected ?? true,

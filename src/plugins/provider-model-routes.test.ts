@@ -13,7 +13,7 @@ describe("provider model route adapter", () => {
     const resolveModelRoutes = vi.fn((_context: ProviderResolveModelRoutesContext) => ({
       kind: "indeterminate" as const,
     }));
-    resolveRoute({
+    resolveProviderModelRoutes({
       provider: "fixture",
       modelId: "native",
       capability: "decision",
