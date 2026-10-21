@@ -8,7 +8,7 @@ describe("qa-bus state", () => {
       ["dm", "direct"],
       ["channel", "channel"],
       ["group", "group"],
-    ]) {
+    ] as const) {
       expect(outbound(`${prefix}:CaseSensitive`, prefix).conversation).toEqual({
         id: "CaseSensitive",
         kind,
