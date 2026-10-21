@@ -388,15 +388,14 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
       }
       try {
         await this.syncing;
-        // Watch events accepted after source planning belong to the next pass.
-        // Joining the old promise alone would strand them until another search.
+        // Every joining caller must drain watch events accepted after source
+        // planning; the old promise alone does not publish those files.
         if (
           !this.closing &&
           !this.closed &&
-          (this.reindexProgress ||
-            (params?.reason === "watch" &&
-              this.dirty &&
-              this.memoryWatchGeneration > this.syncingMemoryWatchGeneration))
+          (this.syncing !== null ||
+            this.reindexProgress ||
+            (this.dirty && this.memoryWatchGeneration > this.syncingMemoryWatchGeneration))
         ) {
           return await this.syncAdmitted(params, options);
         }
