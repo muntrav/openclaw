@@ -200,7 +200,7 @@ it("keeps an empty Environment absent while its owner reads, and admits each rea
     detailsWorkspace: undefined,
     selectedSession: {
       ...view.initial.selectedSession!,
-      worktree: { id: "arrival-tree", repoRoot: "/workspace/example" },
+      worktree: { id: "arrival-tree", branch: "feature/worktree", repoRoot: "/workspace/example" },
     },
   });
   expect(view.group("environment")?.textContent).toContain("Worktree");
