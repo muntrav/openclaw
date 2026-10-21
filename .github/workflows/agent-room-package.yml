@@ -46,7 +46,7 @@ jobs:
       - name: Pack package
         run: |
           mkdir -p artifact
-          npm pack --ignore-scripts --pack-destination artifact
+          npm pack --pack-destination artifact
           test "$(find artifact -maxdepth 1 -name '*.tgz' | wc -l)" -eq 1
 
       - name: Upload package artifact
