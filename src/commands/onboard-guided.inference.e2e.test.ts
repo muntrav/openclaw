@@ -20,7 +20,6 @@ vi.mock("./onboard-interactive-runner.js", async (importActual) => {
 });
 
 const cleanupTasks: Array<() => Promise<void>> = [];
-const match = expect.objectContaining;
 
 afterEach(async () => {
   await Promise.allSettled(cleanupTasks.splice(0).map((cleanup) => cleanup()));
@@ -217,10 +216,13 @@ describe("guided onboarding inference composition", () => {
       await run();
 
       const selection = (index: number, options: object) =>
-        expect(prompter.select).toHaveBeenNthCalledWith(index, match(options));
+        expect(prompter.select).toHaveBeenNthCalledWith(index, expect.objectContaining(options));
       selection(1, {
         initialValue: false,
-        options: [match({ value: false }), match({ value: true })],
+        options: [
+          expect.objectContaining({ value: false }),
+          expect.objectContaining({ value: true }),
+        ],
       });
       selection(2, {
         initialValue: "one",
@@ -229,7 +231,9 @@ describe("guided onboarding inference composition", () => {
           { value: "team", label: "A small team: a chief of staff plus specialists" },
         ],
       });
-      selection(3, { options: expect.arrayContaining([match({ value: "full" })]) });
+      selection(3, {
+        options: expect.arrayContaining([expect.objectContaining({ value: "full" })]),
+      });
       const persisted = await configModule.readConfigFileSnapshot();
       expect(runSystemAgentChat).not.toHaveBeenCalled();
       expect(persisted.valid).toBe(true);
@@ -255,19 +259,19 @@ describe("guided onboarding inference composition", () => {
       expect(postInferenceIndex).toBeGreaterThan(inferenceReadyIndex);
       expect(runSetupMemoryImportStep).toHaveBeenCalledOnce();
       expect(runAppRecommendations).toHaveBeenCalledWith(
-        match({
+        expect.objectContaining({
           modelRouteVerified: true,
           workspaceDir: team ? path.join(workspace, "coordinator") : workspace,
         }),
       );
       expect(observeHandoff).toHaveBeenCalledWith(
-        match({
+        expect.objectContaining({
           next: "hatch",
           workspace: team ? path.join(workspace, "coordinator") : workspace,
         }),
       );
       expect(launchHatchTui).toHaveBeenCalledWith(
-        match({
+        expect.objectContaining({
           deliver: false,
           ...(team ? { session: "agent:coordinator:main" } : { local: true }),
         }),

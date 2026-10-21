@@ -51,7 +51,8 @@ async function renderApproval(
   if (update) {
     update({ props });
   } else {
-    update = mountSolid(ExecApproval, { props }, container).update;
+    const view = mountSolid(ExecApproval, { props }, container);
+    update = (next) => view.update(next);
   }
   const approval = container.querySelector<ExecApprovalElement>("openclaw-exec-approval");
   if (!approval) {

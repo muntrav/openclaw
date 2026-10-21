@@ -1,8 +1,7 @@
-import { once } from "node:events";
 import { createServer } from "node:http";
-import { promisify } from "node:util";
+import type { AddressInfo, Server } from "node:net";
 import type { AssistantMessage, Context, Model } from "@openclaw/llm-core";
-import { assert, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, assert, describe, expect, it } from "vitest";
 import { makeTextToolResult } from "../../../../test/helpers/text-tool-result.js";
 import { cleanupSessionResources } from "../session-resources.js";
 import { createOpenAIResponsesTransportStreamFn } from "./openai-responses-client.js";
@@ -11,37 +10,52 @@ import * as fixtures from "./openai-responses-prompt-observer.test-support.js";
 import { normalizeOpenAIResponsesFunctionCallId } from "./openai-responses-tool-call-id-shape.js";
 
 // Proxy backends can return noncanonical IDs; replay must restore their raw wire IDs.
-async function scriptedServer(script: string[]) {
-  const requests: Array<Record<string, unknown>> = [];
-  const server = createServer(async (req, res) => {
-    req.setEncoding("utf8");
-    let body = "";
-    for await (const chunk of req) {
-      body += chunk;
-    }
-    const index = requests.length;
-    requests.push(JSON.parse(body));
-    const frame = script[index];
-    res.writeHead(frame ? 200 : 500, {
-      "content-type": frame ? "text/event-stream" : "application/json",
-      "cache-control": "no-cache",
+class ScriptedResponsesServer {
+  readonly requests: Array<Record<string, unknown>> = [];
+  private server: Server | undefined;
+
+  constructor(private readonly script: string[]) {
+    servers.push(this);
+  }
+
+  async listen(): Promise<string> {
+    this.server = createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        const index = this.requests.length;
+        this.requests.push(parsed);
+        const frame = this.script[index];
+        if (!frame) {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({ error: { message: `no scripted response for request ${index}` } }),
+          );
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        res.write(`data: ${frame}\n\n`);
+        res.end();
+      });
     });
-    res.end(
-      frame
-        ? `data: ${frame}\n\n`
-        : JSON.stringify({ error: { message: `no scripted response for request ${index}` } }),
-    );
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  onTestFinished(async () => {
-    await promisify(server.close.bind(server))();
-    cleanupSessionResources();
-  });
-  const address = server.address();
-  assert(address && typeof address !== "string");
-  return { requests, model: customEndpointModel(`http://127.0.0.1:${address.port}/v1`) };
+    await new Promise<void>((resolve) => {
+      this.server?.listen(0, "127.0.0.1", resolve);
+    });
+    const address = this.server?.address() as AddressInfo;
+    return `http://127.0.0.1:${address.port}/v1`;
+  }
+
+  async close(): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      this.server?.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 }
+const servers: ScriptedResponsesServer[] = [];
 
 const RAW_CALL_ID = "functions.gateway:0";
 const RAW_ITEM_ID = "fc_tmp_kegospxl46";
@@ -100,12 +114,18 @@ async function run(
 }
 
 describe("HTTP continuation across a non-canonical replayed tool-call id (loopback server, no SDK mocking)", () => {
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => server.close()));
+    cleanupSessionResources();
+  });
+
   it("reshapes, matches, and restores a raw non-canonical call_id/id pair on continuation", async () => {
-    const server = await scriptedServer([
+    const server = new ScriptedResponsesServer([
       toolCallCompletedFrame("resp_1"),
       textCompletedFrame("resp_2", "recorded"),
     ]);
-    const { model } = server;
+    const baseUrl = await server.listen();
+    const model = customEndpointModel(baseUrl);
     const sessionId = "real-sse-noncanonical-id";
     const firstUser = fixtures.userMessage("call the gateway tool", 1);
     const callTurn = await run(model, [firstUser], sessionId);
@@ -137,11 +157,12 @@ describe("HTTP continuation across a non-canonical replayed tool-call id (loopba
   });
 
   it("resends full history when distinct cached calls share a replay ID shape", async () => {
-    const server = await scriptedServer([
+    const server = new ScriptedResponsesServer([
       toolCallCompletedFrame("resp_1", true),
       textCompletedFrame("resp_2", "recorded"),
     ]);
-    const { model } = server;
+    const baseUrl = await server.listen();
+    const model = customEndpointModel(baseUrl);
     const sessionId = "real-sse-ambiguous-noncanonical-ids";
     const firstUser = fixtures.userMessage("call both tools", 1);
     const callTurn = await run(model, [firstUser], sessionId);
@@ -173,10 +194,10 @@ describe("HTTP continuation across a non-canonical replayed tool-call id (loopba
 
   it("stores and advances only new messages across three real chained turns", async () => {
     const questions = ["first question", "second question", "third question"];
-    const server = await scriptedServer(
+    const server = new ScriptedResponsesServer(
       questions.map((_, index) => textCompletedFrame(`resp_${index + 1}`, `answer ${index + 1}`)),
     );
-    const { model } = server;
+    const model = customEndpointModel(await server.listen());
     const context: Context = { messages: [], tools: [] };
     for (const [index, content] of questions.entries()) {
       context.messages.push({ role: "user", content, timestamp: index + 1 });

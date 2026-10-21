@@ -19,7 +19,6 @@ import { createContext, createGateway, createSessions } from "../test-helpers/ap
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../test-helpers/gateway-methods.ts";
 import { cleanupSolid, mountSolid } from "../test-helpers/mount-solid.ts";
-import { sessionOwnerProfiles } from "../test-helpers/session-owner-menu.ts";
 import {
   createApplicationGateway,
   createSolidApplicationContextProvider,
@@ -39,26 +38,6 @@ function mountFacepile(props: ViewerFacepileProps) {
   Object.assign(facepile, props);
   mountSolid(() => facepile);
   return facepile;
-}
-const viewer = <T extends Partial<PresenceViewer> = object>(
-  id: string,
-  name: string,
-  extra?: T,
-) => ({
-  id,
-  name,
-  watchedSessions: [],
-  ...extra,
-});
-async function expectUpdated(element: { updateComplete: Promise<boolean> }, check: () => void) {
-  await waitForSolid(async () => {
-    await element.updateComplete;
-    check();
-  });
-}
-function avatarProvider(gateway: ApplicationContext["gateway"]) {
-  // SAFETY: Avatar consumers use only the Gateway capability in this fixture.
-  return createSolidApplicationContextProvider({ gateway } as ApplicationContext);
 }
 const participant = (
   id: string,
@@ -82,7 +61,10 @@ afterEach(() => {
 it.each(["session", "profile"] as const)(
   "labels the shared owner avatar in %s context",
   async (variant) => {
-    const avatar = mountAvatar(viewer("gateway-owner", "Saved owner name"), variant);
+    const avatar = mountAvatar(
+      { id: "gateway-owner", name: "Saved owner name", watchedSessions: [] },
+      variant,
+    );
     await avatar.updateComplete;
     expect(avatar.querySelector(".viewer-avatar")?.getAttribute("aria-label")).toBe(
       variant === "profile" ? "Saved owner name" : "Shared owner",
@@ -91,12 +73,31 @@ it.each(["session", "profile"] as const)(
 );
 
 it("uses the same user initials and identity hue in the roster and attributed chat", async () => {
-  const user = viewer("profile-riley", "Riley", { email: "riley@example.test" });
+  const user: PresenceViewer = {
+    id: "profile-riley",
+    name: "Riley",
+    email: "riley@example.test",
+    watchedSessions: [],
+  };
   const viewerAvatar = mountAvatar(user);
-  const sender = { id: user.id, name: user.name, username: user.email };
-  const chat = mountSolid(() => createComponent(ChatAuthorAvatar, { sender })).container;
-  const expected = resolveAvatarInitials(sender);
-  await expectUpdated(viewerAvatar, () => {
+
+  const chat = document.createElement("div");
+  document.body.append(chat);
+  mountSolid(
+    () =>
+      createComponent(ChatAuthorAvatar, {
+        sender: { id: user.id, name: user.name, username: user.email },
+      }),
+    { container: chat },
+  );
+
+  const expected = resolveAvatarInitials({
+    id: user.id,
+    name: user.name,
+    username: user.email,
+  });
+  await waitForSolid(async () => {
+    await viewerAvatar.updateComplete;
     const rosterInitials = viewerAvatar.querySelector<HTMLElement>(".viewer-avatar > span");
     const chatInitials = chat.querySelector(".chat-author-avatar__initials");
     expect(rosterInitials?.textContent?.trim()).toBe(expected.initials);
@@ -110,23 +111,34 @@ it("uses the same user initials and identity hue in the roster and attributed ch
   });
 });
 
-it.each([
-  ["mallory", "Mallory", "https://evil.example/avatar.png", false],
-  ["ada", "Ada Lovelace", "/api/users/profile-ada/avatar", true],
-] as const)(
-  "resolves %s presence artwork through the trusted boundary",
-  async (id, name, url, trusted) => {
-    const avatar = mountAvatar(viewer(`profile-${id}`, name, { avatarUrl: url }));
-    await expectUpdated(avatar, () => {
-      if (trusted) {
-        expect(attr(avatar, "img", "src")).toBe(url);
-      } else {
-        expect(avatar.querySelector("img")).toBeNull();
-        expect(avatar.textContent?.trim()).toBe("M");
-      }
-    });
-  },
-);
+it("uses the shared resolver and rejects cross-origin presence avatar metadata", async () => {
+  const avatar = mountAvatar({
+    id: "profile-mallory",
+    name: "Mallory",
+    avatarUrl: "https://evil.example/avatar.png",
+    watchedSessions: [],
+  });
+
+  await waitForSolid(async () => {
+    await avatar.updateComplete;
+    expect(avatar.querySelector("img")).toBeNull();
+    expect(avatar.textContent?.trim()).toBe("M");
+  });
+});
+
+it("renders trusted presence avatar routes directly", async () => {
+  const avatar = mountAvatar({
+    id: "profile-ada",
+    name: "Ada Lovelace",
+    avatarUrl: "/api/users/profile-ada/avatar",
+    watchedSessions: [],
+  });
+
+  await waitForSolid(async () => {
+    await avatar.updateComplete;
+    expect(avatar.querySelector("img")?.getAttribute("src")).toBe("/api/users/profile-ada/avatar");
+  });
+});
 
 it("keeps qualified and unqualified prepared presence faces distinct", async () => {
   const id = "c3e32452-0467-47e5-aafa-233cd5dae29f";
@@ -144,7 +156,8 @@ it("keeps qualified and unqualified prepared presence faces distinct", async () 
     staticUsers: projectOnlinePresenceViewers(payload),
   });
 
-  await expectUpdated(facepile, () => {
+  await waitForSolid(async () => {
+    await facepile.updateComplete;
     expect(attrs(facepile, "img", "src")).toEqual([]);
     expect(attrs(facepile, "a", "href")).toEqual(["/activity/ada-lovelace-c3e324520467"]);
     expect(attr(facepile, ".viewer-facepile", "data-viewer-count")).toBe("2");
@@ -164,15 +177,19 @@ it("shares the current self avatar with typed owner faces missing a revision", a
   vi.spyOn(URL, "createObjectURL")
     .mockReturnValueOnce("blob:shared-viewer-avatar")
     .mockReturnValueOnce("blob:updated-viewer-avatar");
-  const user = viewer("profile-ada", "Ada Lovelace", {
+  const user = {
+    id: "profile-ada",
     identity: { type: "profile", id: "profile-ada" },
     email: "ada@example.test",
+    name: "Ada Lovelace",
     avatarUrl: "/api/users/profile-ada/avatar?v=7",
-  });
+    watchedSessions: [],
+  } satisfies PresenceViewer;
   const fixture = createApplicationGateway();
   const { gateway } = fixture;
   fixture.publish({ ...gateway.snapshot, phase: "connected", selfUser: user });
-  const provider = avatarProvider(gateway);
+  // SAFETY: Avatar consumers use only the Gateway capability in this fixture.
+  const provider = createSolidApplicationContextProvider({ gateway } as ApplicationContext);
   const view = mountSolid(
     () =>
       [user, { ...user, avatarUrl: undefined }].map((avatarUser) =>
@@ -188,9 +205,9 @@ it("shares the current self avatar with typed owner faces missing a revision", a
     "https://gateway.example.test/api/users/profile-ada/avatar?v=7",
     expect.objectContaining({ headers: { Authorization: "Bearer viewer-token" } }),
   );
-  await resolveAvatarImageUrl("/api/users/profile-ada/avatar?v=7");
+  await resolveAvatarImageUrl(user.avatarUrl);
   await settle(avatars);
-  expect(avatars.map((avatar) => attr(avatar, "img", "src"))).toEqual([
+  expect(avatars.map((avatar) => avatar.querySelector("img")?.getAttribute("src"))).toEqual([
     "blob:shared-viewer-avatar",
     "blob:shared-viewer-avatar",
   ]);
@@ -210,7 +227,7 @@ it("shares the current self avatar with typed owner faces missing a revision", a
   ]);
   await resolveAvatarImageUrl("/api/users/profile-ada/avatar?v=8");
   await settle(avatars);
-  expect(avatars.map((avatar) => attr(avatar, "img", "src"))).toEqual([
+  expect(avatars.map((avatar) => avatar.querySelector("img")?.getAttribute("src"))).toEqual([
     "blob:shared-viewer-avatar",
     "blob:updated-viewer-avatar",
   ]);
@@ -287,7 +304,8 @@ it("renders ordered static participant actors without presence filtering", async
     ],
   });
 
-  await expectUpdated(facepile, () => {
+  await waitForSolid(async () => {
+    await facepile.updateComplete;
     expect(attrs(facepile, ".viewer-avatar:not(.viewer-avatar--overflow)", "aria-label")).toEqual([
       "Ada",
       "Research",
@@ -318,7 +336,8 @@ it("excludes displayed owners and participants before choosing visible avatars a
     },
   });
 
-  await expectUpdated(facepile, () => {
+  await waitForSolid(async () => {
+    await facepile.updateComplete;
     expect(attrs(facepile, "[data-viewer-id]", "data-viewer-id")).toEqual(["alice", "bob"]);
   });
   expect(attr(facepile, ".viewer-facepile", "data-viewer-count")).toBe("3");
@@ -348,7 +367,8 @@ it("excludes authenticated self when the browser's own presence row lacks a user
     },
   });
 
-  await expectUpdated(facepile, () => {
+  await waitForSolid(async () => {
+    await facepile.updateComplete;
     expect(facepile.querySelector('[data-viewer-id="self"]')).toBeNull();
     expect(facepile.querySelector('[data-viewer-id="alice"]')).not.toBeNull();
   });
@@ -428,15 +448,29 @@ it("keeps a newly advertised teammate avatar ahead of cached directory availabil
     phase: "connected",
     hello: gatewayHelloForMethods(["users.list"], ["operator.read"]),
     client: createTestGatewayClient(async () => ({
-      profiles: sessionOwnerProfiles("Teammate").profiles.map((profile) =>
-        Object.assign(profile, { id: "teammate", hasAvatar: true, updatedAt: 7 }),
-      ),
+      profiles: [
+        {
+          id: "teammate",
+          displayName: "Teammate",
+          hasAvatar: true,
+          updatedAt: 7,
+          createdAt: 1,
+          avatarMime: null,
+          mergedInto: null,
+          emails: [],
+          githubIdentity: null,
+        },
+      ],
     })),
   });
-  const provider = avatarProvider(gateway);
-  const user = viewer("teammate", "Teammate", {
+  // SAFETY: Avatar consumers use only the Gateway capability in this fixture.
+  const provider = createSolidApplicationContextProvider({ gateway } as ApplicationContext);
+  const user = {
+    id: "teammate",
     identity: { type: "profile" as const, id: "teammate" },
-  });
+    name: "Teammate",
+    watchedSessions: [],
+  };
   const view = mountSolid(() => createComponent(ViewerAvatar, { user }), {
     wrapper: provider.wrapper,
   });

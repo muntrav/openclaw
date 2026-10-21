@@ -16,13 +16,6 @@ import "./tooltip.ts";
 let container: HTMLDivElement;
 type SidebarProps = Parameters<typeof SettingsSidebar>[0];
 let updateSidebar: Setter<SidebarProps> | undefined;
-const query = <T extends Element = HTMLElement>(selector: string) =>
-  container.querySelector<T>(selector);
-const sidebarPart = <T extends Element = HTMLElement>(name: string) =>
-  query<T>(`.settings-sidebar__${name}`);
-const linkTo = (href: string) => query<HTMLAnchorElement>(`a[href="${href}"]`);
-const resultLabels = () =>
-  labels(".settings-sidebar__item-label, .settings-sidebar__subitem-label");
 
 function sidebarProps(overrides: Partial<SidebarProps> = {}): SidebarProps {
   return {
@@ -71,7 +64,7 @@ function searchHarness(initialQuery: string, overrides: Partial<SidebarProps> = 
       },
     });
   rerender();
-  const input = sidebarPart<HTMLInputElement>("search-input")!;
+  const input = container.querySelector<HTMLInputElement>(".settings-sidebar__search-input")!;
   return {
     input,
     get value() {
@@ -135,18 +128,25 @@ describe("settings sidebar search", () => {
       presentation: "embed-page",
       saveIndicator: { ...saveIndicator(), status: "error", lastError: "Save failed", onRetry },
     });
-    expect(query(".settings-sidebar")).toBeNull();
+    expect(container.querySelector<HTMLElement>(".settings-sidebar")).toBeNull();
     await vi.waitFor(() => {
-      const retry = query(".native-embed-header .settings-save-indicator__action");
+      const retry = container.querySelector<HTMLButtonElement>(
+        ".native-embed-header .settings-save-indicator__action",
+      );
       expect(retry?.textContent?.trim()).toBe("Retry");
     });
-    query(".settings-save-indicator__action")!.click();
+    container.querySelector<HTMLButtonElement>(".settings-save-indicator__action")!.click();
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
   it("keeps Models selected while its setup flow is open", () => {
-    render({ activeRouteId: "model-setup" });
-    const active = linkTo("/settings/model-providers");
+    render({
+      activeRouteId: "model-setup",
+    });
+
+    const active = container.querySelector<HTMLAnchorElement>(
+      '.settings-sidebar__item[href="/settings/model-providers"]',
+    );
     expect(active?.classList.contains("settings-sidebar__item--active")).toBe(true);
     expect(active?.getAttribute("aria-current")).toBe("page");
     expect(active?.textContent?.trim()).toBe("Models");
@@ -163,7 +163,9 @@ describe("settings sidebar search", () => {
           setCurrentThemeBranding({ ...original, brandName });
           flush();
         }
-        const link = linkTo("/custodian");
+        const link = container.querySelector<HTMLAnchorElement>(
+          '.settings-sidebar__item[href="/custodian"]',
+        );
         expect(link?.textContent?.trim()).toBe(`Ask ${brandName}`);
         link?.click();
         expect(onNavigate).toHaveBeenCalledWith("custodian");
@@ -180,7 +182,8 @@ describe("settings sidebar search", () => {
       searchBlockMatches: [block("connection", "Gateway Host", "#settings-connection-host")],
     });
 
-    expect(resultLabels()).toEqual(["Gateway", "Gateway Host"]);
+    const resultLabels = labels(".settings-sidebar__item-label, .settings-sidebar__subitem-label");
+    expect(resultLabels).toEqual(["Gateway", "Gateway Host"]);
   });
 
   it("ranks matching pages before matching blocks and navigates to the block", () => {
@@ -196,12 +199,16 @@ describe("settings sidebar search", () => {
       onNavigate,
     });
 
-    expect(resultLabels()).toEqual(["MCP", "Appearance", "Language"]);
-    const active = sidebarPart("item--active");
+    const resultLabels = labels(".settings-sidebar__item-label, .settings-sidebar__subitem-label");
+    expect(resultLabels).toEqual(["MCP", "Appearance", "Language"]);
+    const active = container.querySelector<HTMLElement>(".settings-sidebar__item--active");
     expect(active?.textContent).toContain("Appearance");
     expect(active?.getAttribute("aria-current")).toBe("page");
 
-    linkTo("/settings/appearance?section=__appearance__#settings-language")?.click();
+    const language = container.querySelector<HTMLAnchorElement>(
+      '.settings-sidebar__subitem[href="/settings/appearance?section=__appearance__#settings-language"]',
+    );
+    language?.click();
     expect(onNavigate).toHaveBeenCalledWith("appearance", {
       search: "?section=__appearance__",
       hash: "#settings-language",
@@ -220,8 +227,14 @@ describe("settings sidebar search", () => {
       onNavigate,
     });
 
-    expect(resultLabels()).toEqual(["Infrastructure", "Browser"]);
-    linkTo("/settings/infrastructure?section=browser#config-section-browser")?.click();
+    const resultLabels = labels(".settings-sidebar__item-label, .settings-sidebar__subitem-label");
+    expect(resultLabels).toEqual(["Infrastructure", "Browser"]);
+
+    container
+      .querySelector<HTMLAnchorElement>(
+        '.settings-sidebar__subitem[href="/settings/infrastructure?section=browser#config-section-browser"]',
+      )
+      ?.click();
     expect(onNavigate).toHaveBeenCalledWith("infrastructure", {
       search: "?section=browser",
       hash: "#config-section-browser",
@@ -234,7 +247,9 @@ describe("settings sidebar search", () => {
       searchQuery: "agent defaults",
     });
 
-    const result = linkTo("/settings/ai-agents");
+    const result = container.querySelector<HTMLAnchorElement>(
+      '.settings-sidebar__item[href="/settings/ai-agents"]',
+    );
     expect(result?.textContent?.trim()).toBe("Agent Defaults");
   });
 
@@ -245,9 +260,9 @@ describe("settings sidebar search", () => {
       searchBlockMatches: [block("security", "Security policy", "#config-section-security")],
     });
 
-    expect(linkTo("/settings/security")).toBeNull();
-    expect(query('a[href$="#config-section-security"]')).toBeNull();
-    expect(linkTo("/settings/approvals")).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('a[href="/settings/security"]')).toBeNull();
+    expect(container.querySelector<HTMLElement>('a[href$="#config-section-security"]')).toBeNull();
+    expect(container.querySelector<HTMLElement>('a[href="/settings/approvals"]')).not.toBeNull();
   });
 
   it("keeps Memory search results on the canonical Settings tab path", () => {
@@ -264,7 +279,9 @@ describe("settings sidebar search", () => {
       onNavigate,
     });
 
-    const link = linkTo("/ui/settings/memory/settings#memory-backend");
+    const link = container.querySelector<HTMLAnchorElement>(
+      '.settings-sidebar__subitem[href="/ui/settings/memory/settings#memory-backend"]',
+    );
     expect(link).not.toBeNull();
     expect(link?.getAttribute("aria-current")).toBe("location");
     link?.click();
@@ -301,13 +318,18 @@ describe("settings sidebar search", () => {
 
     enterQuery("does-not-exist");
     expect(labels()).toEqual([]);
-    expect(query('[role="status"]')?.textContent?.trim()).toBe("No matching settings.");
-    sidebarPart("search-clear")?.click();
+    expect(container.querySelector<HTMLElement>('[role="status"]')?.textContent?.trim()).toBe(
+      "No matching settings.",
+    );
+
+    container.querySelector<HTMLButtonElement>(".settings-sidebar__search-clear")?.click();
     expect(labels()).toEqual(allLabels);
     expect(document.activeElement).toBe(input);
 
     enterQuery("channel");
-    linkTo("/settings/channels")?.click();
+    container
+      .querySelector<HTMLAnchorElement>('.settings-sidebar__item[href="/settings/channels"]')
+      ?.click();
     expect(onNavigate).toHaveBeenCalledWith("channels");
   });
 
@@ -372,34 +394,42 @@ describe("settings sidebar search", () => {
         });
 
       renderSidebar(null);
-      expect(query(".gateway-status__outbox")).toBeNull();
-      const saving = () =>
-        expect(query(".settings-save-indicator")?.textContent).toContain(
-          t("configView.autoSaveSaving"),
-        );
-      await vi.waitFor(saving);
+      expect(container.querySelector<HTMLElement>(".gateway-status__outbox")).toBeNull();
+      await vi.waitFor(() => {
+        expect(
+          container.querySelector<HTMLElement>(".settings-save-indicator")?.textContent,
+        ).toContain(t("configView.autoSaveSaving"));
+      });
 
       renderSidebar(null);
-      expect(query(".gateway-status")).toBeNull();
-      expect(query("openclaw-settings-save-indicator")).not.toBeNull();
+      expect(container.querySelector<HTMLElement>(".gateway-status")).toBeNull();
+      expect(
+        container.querySelector<HTMLElement>("openclaw-settings-save-indicator"),
+      ).not.toBeNull();
 
       renderSidebar("suspended", "connection refused?token=settings-secret");
-      const suspended = query(".gateway-status--suspended");
+      const suspended = container.querySelector<HTMLElement>(".gateway-status--suspended");
       expect(suspended?.textContent).toContain(t("connection.suspended"));
       expect(suspended?.textContent).not.toContain("in outbox");
-      expect(query(".gateway-status__retry")).toBeNull();
-      const hasSaveIndicator = () =>
-        expect(query("openclaw-settings-save-indicator") !== null).toBe(presentation === "sidebar");
-      hasSaveIndicator();
+      expect(container.querySelector<HTMLElement>(".gateway-status__retry")).toBeNull();
+      expect(
+        container.querySelector<HTMLElement>("openclaw-settings-save-indicator") !== null,
+      ).toBe(presentation === "sidebar");
       if (presentation === "sidebar") {
-        expect(query(".sidebar-shell__footer")?.textContent).toContain("2 queued");
+        expect(
+          container.querySelector<HTMLElement>(".sidebar-shell__footer")?.textContent,
+        ).toContain("2 queued");
         expect(suspended?.hasAttribute("role")).toBe(false);
-        saving();
+        expect(
+          container.querySelector<HTMLElement>(".settings-save-indicator")?.textContent,
+        ).toContain(t("configView.autoSaveSaving"));
       }
 
       renderSidebar("offline", "connection refused?token=settings-secret");
-      hasSaveIndicator();
-      const button = query<HTMLButtonElement>(".gateway-status__retry");
+      expect(
+        container.querySelector<HTMLElement>("openclaw-settings-save-indicator") !== null,
+      ).toBe(presentation === "sidebar");
+      const button = container.querySelector<HTMLButtonElement>(".gateway-status__retry");
       expect(button?.hasAttribute("title")).toBe(false);
       expect(
         (button?.closest("openclaw-tooltip") as (HTMLElement & { content?: string }) | null)
@@ -415,10 +445,10 @@ describe("settings sidebar search", () => {
       expect(onRetryConnect).toHaveBeenCalledOnce();
 
       renderSidebar("restarting");
-      const restarting = query(".gateway-status--restarting");
+      const restarting = container.querySelector<HTMLElement>(".gateway-status--restarting");
       expect(restarting?.textContent).toContain(t("connection.restarting"));
       expect(restarting?.textContent).not.toContain("in outbox");
-      expect(query(".gateway-status__retry")).toBeNull();
+      expect(container.querySelector<HTMLElement>(".gateway-status__retry")).toBeNull();
     },
   );
 });
@@ -435,7 +465,7 @@ describe("Settings agent selector", () => {
     async (presentation) => {
       const props = renderSidebar({ presentation });
       expect(container.querySelectorAll("openclaw-agent-select")).toHaveLength(1);
-      const selector = query<AgentSelectElement>("openclaw-agent-select")!;
+      const selector = container.querySelector<AgentSelectElement>("openclaw-agent-select")!;
       await selector.updateComplete;
       expect(props.agentIdentity.ensure).toHaveBeenCalledWith(["main"]);
       expect(
@@ -480,7 +510,7 @@ describe("Settings agent selector", () => {
           state: { selectedId: count ? "main" : null, scopeId: count ? "main" : null },
         },
       });
-      const selector = query<AgentSelectElement>("openclaw-agent-select")!;
+      const selector = container.querySelector<AgentSelectElement>("openclaw-agent-select")!;
       await selector.updateComplete;
       expect(selector.querySelector<HTMLButtonElement>(".agent-select__trigger")?.disabled).toBe(
         true,
@@ -501,7 +531,7 @@ describe("Settings agent selector", () => {
         { id: "system", kind: "system" },
       ],
     });
-    const selector = query<AgentSelectElement>("openclaw-agent-select")!;
+    const selector = container.querySelector<AgentSelectElement>("openclaw-agent-select")!;
     await selector.updateComplete;
     expect(selector.options.map((option) => option.value)).toEqual([
       "main",
@@ -521,24 +551,24 @@ describe("Settings agent selector", () => {
 it("preserves search drafts, navigation focus, and instance-local scroll shadows", () => {
   const props = sidebarProps();
   render(props);
-  const input = sidebarPart<HTMLInputElement>("search-input")!;
+  const input = container.querySelector<HTMLInputElement>(".settings-sidebar__search-input")!;
   input.focus();
   input.value = "composing search";
   render({ ...props, connectionStatus: "reconnecting" });
-  expect(sidebarPart("search-input")).toBe(input);
+  expect(container.querySelector<HTMLElement>(".settings-sidebar__search-input")).toBe(input);
   expect(document.activeElement).toBe(input);
   expect(input.value).toBe("composing search");
-  const link = sidebarPart<HTMLAnchorElement>("item")!;
+  const link = container.querySelector<HTMLAnchorElement>(".settings-sidebar__item")!;
   link.focus();
   render({ ...props, connectionStatus: "offline" });
-  expect(sidebarPart("item")).toBe(link);
+  expect(container.querySelector<HTMLElement>(".settings-sidebar__item")).toBe(link);
   expect(document.activeElement).toBe(link);
   render({ ...props, searchQuery: "gateway" });
   expect(input.value).toBe("gateway");
   const other = mountSolid(() => <SettingsSidebar {...props} />);
   flush();
-  const nav = sidebarPart("nav")!;
-  const search = sidebarPart("search")!;
+  const nav = container.querySelector<HTMLElement>(".settings-sidebar__nav")!;
+  const search = container.querySelector<HTMLElement>(".settings-sidebar__search")!;
   const otherSearch = other.container.querySelector<HTMLElement>(".settings-sidebar__search")!;
   nav.scrollTop = 12;
   nav.dispatchEvent(new Event("scroll"));
@@ -593,7 +623,7 @@ it("follows agent owner replacement and publications without remounting", async 
     ...original,
   });
   render(props);
-  const selector = query<AgentSelectElement>("openclaw-agent-select")!;
+  const selector = container.querySelector<AgentSelectElement>("openclaw-agent-select")!;
   await selector.updateComplete;
   const label = () => selector.querySelector(".agent-select__trigger")?.getAttribute("aria-label");
   const avatar = () =>
@@ -638,5 +668,5 @@ it("follows agent owner replacement and publications without remounting", async 
     expect(replacement.agentIdentity.ensure).toHaveBeenLastCalledWith(["research"]);
     expect(avatar()).toBe("🦊");
   });
-  expect(query("openclaw-agent-select")).toBe(selector);
+  expect(container.querySelector<HTMLElement>("openclaw-agent-select")).toBe(selector);
 });

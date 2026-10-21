@@ -20,7 +20,6 @@ beforeEach(() => {
 });
 afterEach(() => container.remove());
 const labels = () => controls.read().map((element) => element.textContent);
-const query = <T extends HTMLElement>(selector: string) => container.querySelector<T>(selector)!;
 function mount(content: () => JSX.Element) {
   return mountSolid(
     () => <HovercardControlsContext value={controls}>{content()}</HovercardControlsContext>,
@@ -73,16 +72,19 @@ it("registers session participant inspection and native facepile links through t
     />
   ));
 
-  const tooltip = query<HTMLElementTagNameMap["openclaw-tooltip"]>(
+  const tooltip = container.querySelector<HTMLElementTagNameMap["openclaw-tooltip"]>(
     "openclaw-tooltip.session-hovercard__participants-tooltip",
-  );
+  )!;
   await settleTooltip(tooltip);
-  const name = query(".session-hovercard__attribution-name");
-  const trigger = query<HTMLButtonElement>(".session-hovercard__attribution-others");
-  const detail = (id: string) => query(`openclaw-tooltip a[href="/activity/${id}"]`);
-  const avatar = (id: string) => query(`openclaw-viewer-facepile a[href="/activity/${id}"]`);
-  const [miraDetail, rileyDetail] = [detail("mira"), detail("riley")];
-  const [miraAvatar, rileyAvatar] = [avatar("mira"), avatar("riley")];
+  const name = container.querySelector(".session-hovercard__attribution-name")!;
+  const trigger = tooltip.querySelector<HTMLButtonElement>(
+    ".session-hovercard__attribution-others",
+  )!;
+  const miraDetail = tooltip.querySelector<HTMLAnchorElement>('a[href="/activity/mira"]')!;
+  const rileyDetail = tooltip.querySelector<HTMLAnchorElement>('a[href="/activity/riley"]')!;
+  const facepile = container.querySelector("openclaw-viewer-facepile")!;
+  const miraAvatar = facepile.querySelector<HTMLAnchorElement>('a[href="/activity/mira"]')!;
+  const rileyAvatar = facepile.querySelector<HTMLAnchorElement>('a[href="/activity/riley"]')!;
   expect(tooltip.hasAttribute("open")).toBe(false);
   expect(controls.read()).toEqual([name, trigger, miraAvatar, rileyAvatar]);
   for (const open of [true, false]) {

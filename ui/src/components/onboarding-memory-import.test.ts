@@ -186,7 +186,7 @@ describe("OnboardingMemoryImport", () => {
     const context = createContext(request, { agentsLoaded: false });
     const notify = contextNotifications.get(context)!;
     const ensureList = vi.mocked(context.agents.ensureList);
-    const pendingList = createDeferred<void>();
+    const pendingList = createDeferred();
     ensureList.mockImplementationOnce(async () => {
       context.agents.state.agentsLoading = true;
       notify();
