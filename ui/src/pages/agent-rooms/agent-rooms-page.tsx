@@ -1,7 +1,7 @@
 import { For, Show, createMemo, createSignal, onSettled } from "solid-js";
 import type { AgentSummary } from "../../api/types.ts";
-import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import type { ApplicationContext } from "../../app/context-types.ts";
+import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import { projectGateway } from "../../lib/reactive/application.ts";
 import { useApplication } from "../../lib/reactive/context.ts";
 import { projectAgents } from "../../lib/reactive/domain-capabilities.ts";
@@ -108,7 +108,9 @@ export function AgentRoomsPage() {
           return retained.length > 0 ? retained : available.map((agent) => agent.id);
         });
       })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
       .finally(() => setLoading(false));
   });
 
@@ -121,8 +123,7 @@ export function AgentRoomsPage() {
   };
 
   // Keep room turns separate from each agent's normal `main` conversation.
-  const sessionKey = (agentId: string) =>
-    `agent:${agentId}:room:agent-room`;
+  const sessionKey = (agentId: string) => `agent:${agentId}:room:agent-room`;
 
   const readHistory = (gatewayClient: GatewayClient, key: string) =>
     gatewayClient.request<ChatHistory>("chat.history", { sessionKey: key, limit: HISTORY_LIMIT });
@@ -203,33 +204,126 @@ export function AgentRoomsPage() {
       </ShellLayoutBoundary>
       <div class="agent-room-page">
         <aside class="agent-room-sidebar">
-          <div class="agent-room-sidebar__heading"><div><span class="eyebrow">OpenClaw</span><h2>Shared room</h2></div><span class="agent-room-count">{selectedAgentIds().length}</span></div>
-          <p class="agent-room-sidebar__hint">Choose who receives the next message. New configured agents appear automatically.</p>
+          <div class="agent-room-sidebar__heading">
+            <div>
+              <span class="eyebrow">OpenClaw</span>
+              <h2>Shared room</h2>
+            </div>
+            <span class="agent-room-count">{selectedAgentIds().length}</span>
+          </div>
+          <p class="agent-room-sidebar__hint">
+            Choose who receives the next message. New configured agents appear automatically.
+          </p>
           <div class="agent-room-agents">
             <Show when={!loading()} fallback={<div class="agent-room-empty">Loading agents…</div>}>
-              <For each={agents()}>{(agent) => {
-                const selected = () => selectedAgentIds().includes(agent.id);
-                return <label class={`agent-room-agent ${selected() ? "agent-room-agent--selected" : ""}`}>
-                  <input type="checkbox" checked={selected()} onChange={() => toggleAgent(agent.id)} />
-                  <span class="agent-room-agent__avatar">{agent.identity?.emoji ?? "✦"}</span>
-                  <span class="agent-room-agent__copy"><strong>{agent.name ?? agent.identity?.name ?? agent.id}</strong><small>{agent.model?.primary ?? "Gateway default"} · {agent.thinkingDefault ?? "Gateway default"}</small></span>
-                </label>;
-              }}</For>
+              <For each={agents()}>
+                {(agent) => {
+                  const selected = () => selectedAgentIds().includes(agent.id);
+                  return (
+                    <label
+                      class={`agent-room-agent ${selected() ? "agent-room-agent--selected" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected()}
+                        onChange={() => toggleAgent(agent.id)}
+                      />
+                      <span class="agent-room-agent__avatar">{agent.identity?.emoji ?? "✦"}</span>
+                      <span class="agent-room-agent__copy">
+                        <strong>{agent.name ?? agent.identity?.name ?? agent.id}</strong>
+                        <small>
+                          {agent.model?.primary ?? "Gateway default"} ·{" "}
+                          {agent.thinkingDefault ?? "Gateway default"}
+                        </small>
+                      </span>
+                    </label>
+                  );
+                }}
+              </For>
             </Show>
           </div>
-          <div class="agent-room-policy"><strong>Gateway defaults</strong><span>Model and thinking settings remain controlled by OpenClaw configuration.</span></div>
-          <Show when={error()}><div class="agent-room-error">{error()}</div></Show>
+          <div class="agent-room-policy">
+            <strong>Gateway defaults</strong>
+            <span>Model and thinking settings remain controlled by OpenClaw configuration.</span>
+          </div>
+          <Show when={error()}>
+            <div class="agent-room-error">{error()}</div>
+          </Show>
         </aside>
         <main class="agent-room-main">
-          <header class="agent-room-main__header"><div><span class="eyebrow">Conversation</span><h1>Agent room</h1></div><span class={`agent-room-status ${sending() ? "agent-room-status--working" : ""}`}>{sending() ? "Agents working…" : "Ready"}</span></header>
+          <header class="agent-room-main__header">
+            <div>
+              <span class="eyebrow">Conversation</span>
+              <h1>Agent room</h1>
+            </div>
+            <span class={`agent-room-status ${sending() ? "agent-room-status--working" : ""}`}>
+              {sending() ? "Agents working…" : "Ready"}
+            </span>
+          </header>
           <section class="agent-room-transcript" aria-live="polite">
-            <Show when={messages().length > 0} fallback={<div class="agent-room-welcome"><span class="agent-room-welcome__mark">✦</span><h2>Start a shared conversation</h2><p>Ask selected agents for independent views, then compare their answers in one transcript.</p></div>}>
-              <For each={messages()}>{(message) => <article class={`agent-room-message agent-room-message--${message.sender}`}><div class="agent-room-message__meta"><span class="agent-room-message__sender">{message.sender === "user" ? "You" : message.agentName ?? "Agent"}</span><time>{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></div><div class="agent-room-message__body">{message.text}</div></article>}</For>
+            <Show
+              when={messages().length > 0}
+              fallback={
+                <div class="agent-room-welcome">
+                  <span class="agent-room-welcome__mark">✦</span>
+                  <h2>Start a shared conversation</h2>
+                  <p>
+                    Ask selected agents for independent views, then compare their answers in one
+                    transcript.
+                  </p>
+                </div>
+              }
+            >
+              <For each={messages()}>
+                {(message) => (
+                  <article class={`agent-room-message agent-room-message--${message.sender}`}>
+                    <div class="agent-room-message__meta">
+                      <span class="agent-room-message__sender">
+                        {message.sender === "user" ? "You" : (message.agentName ?? "Agent")}
+                      </span>
+                      <time>
+                        {new Date(message.createdAt).toLocaleTimeString([], {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </div>
+                    <div class="agent-room-message__body">{message.text}</div>
+                  </article>
+                )}
+              </For>
             </Show>
           </section>
-          <form class="agent-room-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-            <textarea value={draft()} onInput={(event) => setDraft(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="Message the room…" disabled={sending() || selectedAgentIds().length === 0} rows="2" />
-            <div class="agent-room-composer__footer"><span>Shift + Enter for a new line</span><button class="primary" type="submit" disabled={sending() || !draft().trim() || selectedAgentIds().length === 0}>{sending() ? "Working…" : "Send"}</button></div>
+          <form
+            class="agent-room-composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void send();
+            }}
+          >
+            <textarea
+              value={draft()}
+              onInput={(event) => setDraft(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder="Message the room…"
+              disabled={sending() || selectedAgentIds().length === 0}
+              rows="2"
+            />
+            <div class="agent-room-composer__footer">
+              <span>Shift + Enter for a new line</span>
+              <button
+                class="primary"
+                type="submit"
+                disabled={sending() || !draft().trim() || selectedAgentIds().length === 0}
+              >
+                {sending() ? "Working…" : "Send"}
+              </button>
+            </div>
           </form>
         </main>
       </div>

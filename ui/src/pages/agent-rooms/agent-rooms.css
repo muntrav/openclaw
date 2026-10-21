@@ -1,42 +1,260 @@
-.content:has(openclaw-agent-rooms-page) { overflow: hidden; }
-openclaw-agent-rooms-page { display: contents; }
-.agent-room-page { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); min-height: calc(100vh - 150px); margin: 0 18px 18px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
-.agent-room-sidebar { display: flex; flex-direction: column; gap: 16px; padding: 20px; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 70%, var(--card)); }
-.agent-room-sidebar__heading, .agent-room-main__header, .agent-room-composer__footer, .agent-room-message__meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.agent-room-sidebar h2, .agent-room-main h1, .agent-room-welcome h2 { margin: 3px 0 0; color: var(--text-strong); font-size: 18px; }
-.agent-room-main h1 { font-size: 20px; }
-.eyebrow { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.agent-room-count, .agent-room-status { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 11px; }
-.agent-room-status--working { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
-.agent-room-sidebar__hint, .agent-room-policy span, .agent-room-composer__footer, .agent-room-agent small { color: var(--muted); font-size: 12px; line-height: 1.45; }
-.agent-room-sidebar__hint { margin: -4px 0 0; }
-.agent-room-agents { display: flex; flex-direction: column; gap: 8px; }
-.agent-room-agent { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid transparent; border-radius: var(--radius-md); cursor: pointer; }
-.agent-room-agent:hover, .agent-room-agent--selected { border-color: var(--border); background: var(--card); }
-.agent-room-agent input { accent-color: var(--accent); }
-.agent-room-agent__avatar, .agent-room-welcome__mark { display: grid; flex: 0 0 auto; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 16%, var(--card)); color: var(--accent); }
-.agent-room-agent__copy { display: grid; min-width: 0; gap: 2px; }
-.agent-room-agent__copy strong, .agent-room-agent small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-room-agent__copy strong { color: var(--text-strong); font-size: 13px; }
-.agent-room-policy { display: grid; gap: 5px; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); }
-.agent-room-policy strong { color: var(--text-strong); font-size: 12px; }
-.agent-room-error { padding: 9px 10px; border: 1px solid var(--danger-subtle); border-radius: var(--radius-md); color: var(--danger); font-size: 12px; }
-.agent-room-main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
-.agent-room-main__header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
-.agent-room-transcript { display: flex; flex-direction: column; gap: 14px; min-height: 0; padding: 24px; overflow: auto; }
-.agent-room-welcome { display: grid; place-items: center; align-content: center; min-height: 280px; color: var(--muted); text-align: center; }
-.agent-room-welcome__mark { width: 44px; height: 44px; margin-bottom: 10px; font-size: 20px; }
-.agent-room-welcome p { max-width: 390px; margin: 7px 0 0; font-size: 13px; line-height: 1.5; }
-.agent-room-message { max-width: min(760px, 92%); padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
-.agent-room-message--user { align-self: flex-end; border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--card)); }
-.agent-room-message--system { border-color: var(--danger-subtle); color: var(--danger); }
-.agent-room-message__meta { justify-content: flex-start; margin-bottom: 6px; }
-.agent-room-message__sender { color: var(--text-strong); font-size: 12px; font-weight: 700; }
-.agent-room-message__meta time { color: var(--muted); font-size: 10px; }
-.agent-room-message__body { white-space: pre-wrap; word-break: break-word; color: var(--text); font-size: 13px; line-height: 1.55; }
-.agent-room-composer { display: grid; gap: 8px; margin: 0 24px 24px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); }
-.agent-room-composer textarea { width: 100%; min-height: 48px; resize: vertical; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; line-height: 1.45; }
-.agent-room-composer textarea::placeholder { color: var(--muted); }
-.agent-room-composer button { min-width: 72px; }
-.agent-room-empty { color: var(--muted); font-size: 12px; }
-@media (max-width: 760px) { .agent-room-page { grid-template-columns: 1fr; overflow: auto; } .agent-room-sidebar { border-right: 0; border-bottom: 1px solid var(--border); } .agent-room-agents { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); } }
+.content:has(openclaw-agent-rooms-page) {
+  overflow: hidden;
+}
+openclaw-agent-rooms-page {
+  display: contents;
+}
+.agent-room-page {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  min-height: calc(100vh - 150px);
+  margin: 0 18px 18px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+.agent-room-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 70%, var(--card));
+}
+.agent-room-sidebar__heading,
+.agent-room-main__header,
+.agent-room-composer__footer,
+.agent-room-message__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agent-room-sidebar h2,
+.agent-room-main h1,
+.agent-room-welcome h2 {
+  margin: 3px 0 0;
+  color: var(--text-strong);
+  font-size: 18px;
+}
+.agent-room-main h1 {
+  font-size: 20px;
+}
+.eyebrow {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.agent-room-count,
+.agent-room-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.agent-room-status--working {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.agent-room-sidebar__hint,
+.agent-room-policy span,
+.agent-room-composer__footer,
+.agent-room-agent small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.agent-room-sidebar__hint {
+  margin: -4px 0 0;
+}
+.agent-room-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-room-agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.agent-room-agent:hover,
+.agent-room-agent--selected {
+  border-color: var(--border);
+  background: var(--card);
+}
+.agent-room-agent input {
+  accent-color: var(--accent);
+}
+.agent-room-agent__avatar,
+.agent-room-welcome__mark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, var(--card));
+  color: var(--accent);
+}
+.agent-room-agent__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.agent-room-agent__copy strong,
+.agent-room-agent small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-room-agent__copy strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+.agent-room-policy {
+  display: grid;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.agent-room-policy strong {
+  color: var(--text-strong);
+  font-size: 12px;
+}
+.agent-room-error {
+  padding: 9px 10px;
+  border: 1px solid var(--danger-subtle);
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  font-size: 12px;
+}
+.agent-room-main {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+}
+.agent-room-main__header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-room-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  padding: 24px;
+  overflow: auto;
+}
+.agent-room-welcome {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  min-height: 280px;
+  color: var(--muted);
+  text-align: center;
+}
+.agent-room-welcome__mark {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 10px;
+  font-size: 20px;
+}
+.agent-room-welcome p {
+  max-width: 390px;
+  margin: 7px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.agent-room-message {
+  max-width: min(760px, 92%);
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+.agent-room-message--user {
+  align-self: flex-end;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--card));
+}
+.agent-room-message--system {
+  border-color: var(--danger-subtle);
+  color: var(--danger);
+}
+.agent-room-message__meta {
+  justify-content: flex-start;
+  margin-bottom: 6px;
+}
+.agent-room-message__sender {
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+.agent-room-message__meta time {
+  color: var(--muted);
+  font-size: 10px;
+}
+.agent-room-message__body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.agent-room-composer {
+  display: grid;
+  gap: 8px;
+  margin: 0 24px 24px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+}
+.agent-room-composer textarea {
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+}
+.agent-room-composer textarea::placeholder {
+  color: var(--muted);
+}
+.agent-room-composer button {
+  min-width: 72px;
+}
+.agent-room-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  .agent-room-page {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+  .agent-room-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .agent-room-agents {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+}
