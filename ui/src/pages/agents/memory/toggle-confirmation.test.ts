@@ -51,7 +51,7 @@ describe("renderDreamingToggleConfirmation", () => {
   });
 
   it("shows saving and vetoes cancel until the admitted write settles", async () => {
-    const pending = createDeferred<void>();
+    const pending = createDeferred();
     const onCancel = vi.fn();
     const host = renderToggle({ onConfirm: () => pending.promise, onCancel });
     const confirm = host.querySelector("button");

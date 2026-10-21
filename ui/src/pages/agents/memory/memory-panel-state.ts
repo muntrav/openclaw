@@ -314,11 +314,11 @@ export function createAgentMemory(
       toggleRequest?.pending ||
       !canCallDreamingMethod(dreaming, "config.patch", "operator.admin")
     ) {
-      return;
+      return undefined;
     }
     const scope = captureTaskScope();
     if (!scope) {
-      return;
+      return undefined;
     }
     const request = { ...Promise.withResolvers<void>(), pending: true };
     toggleRequest = request;
