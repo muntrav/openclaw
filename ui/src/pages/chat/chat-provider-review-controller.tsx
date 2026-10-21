@@ -1,7 +1,17 @@
-import { createMemo, createStore, lazy, Loading, onCleanup, Show } from "solid-js";
+import {
+  action,
+  createMemo,
+  createOptimistic,
+  createStore,
+  lazy,
+  Loading,
+  onCleanup,
+  Show,
+} from "solid-js";
 import { Icon } from "../../components/solid/icon.tsx";
 import { formatUiError } from "../../lib/format-error.ts";
 import { t } from "../../lib/reactive/i18n.ts";
+import type { SessionRefreshOutcome } from "../../lib/sessions/session-capability.ts";
 import { resolveUiSelectedSessionAgentId } from "../../lib/sessions/session-key.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import {
@@ -28,15 +38,14 @@ type ReviewBinding = {
   idempotencyKey: string;
   attemptedRunId: string | null;
   accepted: boolean;
+  continuing: boolean;
+  checking: boolean;
 };
 
 type ReviewPresentation = {
-  binding: ReviewBinding | null;
   open: boolean;
   loading: boolean;
-  pending: boolean;
   submitted: boolean;
-  refreshing: boolean;
   error: string | null;
   failedAttemptId: string | null;
 };
@@ -46,8 +55,6 @@ export function createChatProviderReview(deps: {
   readState: () => ChatHost | undefined;
 }) {
   let disposed = false;
-  let continuationInFlight: ReviewBinding | null = null;
-  let refreshInFlight: ReviewBinding | null = null;
   onCleanup(() => {
     disposed = true;
   });
@@ -93,103 +100,154 @@ export function createChatProviderReview(deps: {
       idempotencyKey: generateUUID(),
       attemptedRunId: null,
       accepted: false,
+      continuing: false,
+      checking: false,
     };
   });
   const failureMessage = (error?: string) =>
     [t("chat.providerReview.continuationFailed"), error ? formatUiError(error) : null]
       .filter(Boolean)
       .join(" ");
-  // A new review resets local presentation; terminal receipts remain until an explicit retry.
-  const initialPresentation = (current: ReviewBinding | null): ReviewPresentation => ({
-    binding: current,
-    open: false,
-    loading: false,
-    pending: false,
-    submitted: false,
-    refreshing: false,
-    error: null,
-    failedAttemptId: null,
+  // Each review owns its transaction state so a retired request cannot hold its replacement.
+  const activity = createMemo(() => {
+    const current = binding();
+    if (!current) {
+      return null;
+    }
+    const [pending, setPending] = createOptimistic(false);
+    const [checking, setChecking] = createOptimistic(false);
+    const [presentation, setPresentation] = createStore<ReviewPresentation>(
+      (draft) => {
+        const source = deps.source();
+        const row = source && chatProviderReviewRow(source.state);
+        if (
+          !pending() &&
+          !checking() &&
+          !current.continuing &&
+          !current.checking &&
+          current.attemptedRunId &&
+          draft.failedAttemptId !== current.attemptedRunId &&
+          row?.lastRunId === current.attemptedRunId &&
+          row.hasActiveRun === false &&
+          !row.activeRunIds?.length &&
+          (row.status === "failed" || row.status === "timeout" || row.status === "killed")
+        ) {
+          draft.submitted = false;
+          draft.error = failureMessage(row.lastRunError);
+          draft.failedAttemptId = current.attemptedRunId;
+        }
+      },
+      {
+        open: false,
+        loading: false,
+        submitted: false,
+        error: null,
+        failedAttemptId: null,
+      },
+    );
+    return { current, presentation, setPresentation, pending, setPending, checking, setChecking };
   });
-  const [presentation, setPresentation] = createStore(
-    (previous) => {
-      const current = binding();
-      const source = deps.source();
-      if (previous?.binding !== current) {
-        return initialPresentation(current);
-      }
-      const row = source && chatProviderReviewRow(source.state);
-      if (
-        current &&
-        !previous.pending &&
-        !previous.refreshing &&
-        continuationInFlight !== current &&
-        refreshInFlight !== current &&
-        current.attemptedRunId &&
-        previous.failedAttemptId !== current.attemptedRunId &&
-        row?.lastRunId === current.attemptedRunId &&
-        row.hasActiveRun === false &&
-        !row.activeRunIds?.length &&
-        (row.status === "failed" || row.status === "timeout" || row.status === "killed")
-      ) {
-        previous.submitted = false;
-        previous.error = failureMessage(row.lastRunError);
-        previous.failedAttemptId = current.attemptedRunId;
-      }
-      return undefined;
-    },
-    initialPresentation(null),
-    {
-      // Bindings carry synchronous request authority; only presentation fields are reactive.
-      shallow: true,
-    },
-  );
+  type ReviewActivity = NonNullable<ReturnType<typeof activity>>;
   const isCurrent = (current: ReviewBinding) =>
     !disposed && binding() === current && matches(current);
-  const update = (
-    current: ReviewBinding | null,
-    patch: Partial<Omit<ReviewPresentation, "binding">>,
-  ) => {
-    if (current && isCurrent(current)) {
-      setPresentation((previous) => {
-        Object.assign(previous, patch);
+  const update = (active: ReviewActivity | null, patch: Partial<ReviewPresentation>) => {
+    if (active && isCurrent(active.current)) {
+      active.setPresentation((draft) => {
+        Object.assign(draft, patch);
       });
     }
   };
-  const recordFailedAttempt = (current: ReviewBinding, error: string) => {
+  const recordFailedAttempt = (active: ReviewActivity, error: string) => {
+    const current = active.current;
     current.accepted = false;
     current.attemptedRunId = null;
     // A terminal receipt owns the old key; another explicit click gets a fresh one.
     current.idempotencyKey = generateUUID();
-    update(current, { submitted: false, error, failedAttemptId: null });
+    update(active, { submitted: false, error, failedAttemptId: null });
   };
-  const refresh = async (current: ReviewBinding | null) => {
-    if (!current || !isCurrent(current) || !current.accepted || refreshInFlight === current) {
-      return;
-    }
-    refreshInFlight = current;
-    update(current, { refreshing: true, error: null });
+  const checkStatus = action(function* (active: ReviewActivity) {
+    const current = active.current;
+    active.setChecking(true);
+    update(active, { error: null });
     try {
-      const outcome = await current.state.sessions.reconcileMutation(current.agentId);
-      if (outcome.status === "failed") {
-        update(current, { error: t("chat.providerReview.refreshFailed") });
+      // Owner notifications must publish outside this held presentation transaction.
+      const outcome: SessionRefreshOutcome | undefined = yield Promise.resolve().then(() => {
+        if (isCurrent(current)) {
+          return current.state.sessions.reconcileMutation(current.agentId);
+        }
+        return undefined;
+      });
+      if (outcome?.status === "failed") {
+        update(active, { error: t("chat.providerReview.refreshFailed") });
       }
     } catch {
-      update(current, { error: t("chat.providerReview.refreshFailed") });
+      update(active, { error: t("chat.providerReview.refreshFailed") });
     } finally {
-      if (refreshInFlight === current) {
-        refreshInFlight = null;
-      }
-      update(current, { refreshing: false });
+      current.checking = false;
     }
+  });
+  const refresh = (active: ReviewActivity | null) => {
+    if (
+      !active ||
+      !isCurrent(active.current) ||
+      !active.current.accepted ||
+      active.current.checking
+    ) {
+      return Promise.resolve();
+    }
+    active.current.checking = true;
+    return checkStatus(active);
   };
+  const continueReview = action(function* (active: ReviewActivity) {
+    const current = active.current;
+    try {
+      if (!isCurrent(current) || !deps.source()?.canWrite) {
+        return;
+      }
+      current.attemptedRunId = current.idempotencyKey;
+      active.setPending(true);
+      update(active, { error: null });
+      const result: unknown = yield current.client!.request("sessions.providerReview.continue", {
+        sessionKey: current.sessionKey,
+        ...(current.agentId ? { agentId: current.agentId } : {}),
+        sessionId: current.sessionId,
+        reviewId: current.review.id,
+        idempotencyKey: current.idempotencyKey,
+      });
+      if (!isCurrent(current)) {
+        return;
+      }
+      const ack = normalizeChatSendAck(result, current.idempotencyKey);
+      if (isTerminalFailureChatSendAck(ack)) {
+        recordFailedAttempt(active, failureMessage());
+        return;
+      }
+      current.attemptedRunId = ack.runId;
+      current.accepted = true;
+      update(active, { submitted: true });
+      // A transport ACK does not clear the pause. Only the canonical row can do that.
+      yield refresh(active);
+    } catch (error) {
+      update(active, { error: formatUiError(error) });
+    } finally {
+      current.continuing = false;
+    }
+  });
   const view = createMemo(() => {
-    const activity = presentation;
-    const current = binding();
+    const active = activity();
+    const current = active?.current;
     const source = deps.source();
+    const pending = active?.pending() ?? false;
+    const refreshing = active?.checking() ?? false;
     return {
-      ...activity,
+      open: active?.presentation.open ?? false,
+      loading: active?.presentation.loading ?? false,
+      pending,
+      refreshing,
+      submitted: refreshing || (!pending && (active?.presentation.submitted ?? false)),
+      error: pending || refreshing ? null : (active?.presentation.error ?? null),
       review: source && chatProviderReviewRow(source.state)?.providerReview,
-      dialog: activity.open && current && matches(current) ? current : null,
+      dialog: active?.presentation.open && current && matches(current) ? current : null,
       available: Boolean(current),
       canWrite: source?.canWrite ?? false,
     };
@@ -197,83 +255,58 @@ export function createChatProviderReview(deps: {
   return {
     view,
     async open() {
-      const current = binding();
-      if (!current || !isCurrent(current) || presentation.loading) {
+      const active = activity();
+      if (!active || !isCurrent(active.current) || active.presentation.loading) {
         return;
       }
-      update(current, { loading: true });
+      update(active, { loading: true });
       try {
         await ProviderReviewModal.preload();
-        update(current, { open: true });
+        update(active, { open: true });
       } catch (error) {
-        update(current, { error: formatUiError(error) });
+        update(active, { error: formatUiError(error) });
       } finally {
-        update(current, { loading: false });
+        update(active, { loading: false });
       }
     },
-    close: () => update(binding(), { open: false }),
-    refresh: () => void refresh(view().dialog),
+    close: () => update(activity(), { open: false }),
+    refresh() {
+      const active = activity();
+      if (active?.presentation.open) {
+        void refresh(active);
+      }
+    },
     async acknowledge() {
-      const current = binding();
+      const active = activity();
       if (
-        !current ||
-        !isCurrent(current) ||
-        !presentation.open ||
+        !active ||
+        !isCurrent(active.current) ||
+        !active.presentation.open ||
         !deps.source()?.canWrite ||
-        continuationInFlight === current ||
-        !current.review.canContinue ||
-        !current.review.explanation?.trim() ||
-        !current.review.continuationMessage?.trim()
+        active.current.continuing ||
+        !active.current.review.canContinue ||
+        !active.current.review.explanation?.trim() ||
+        !active.current.review.continuationMessage?.trim()
       ) {
         return;
       }
-      const activity = presentation;
+      const current = active.current;
       const failedAttempt =
-        current.attemptedRunId !== null && activity.failedAttemptId === current.attemptedRunId;
+        current.attemptedRunId !== null &&
+        active.presentation.failedAttemptId === current.attemptedRunId;
       if (current.accepted && !failedAttempt) {
         return;
       }
       if (failedAttempt) {
-        // Retire a failed attempt only when another explicit acknowledgment starts.
-        recordFailedAttempt(current, activity.error ?? failureMessage());
+        recordFailedAttempt(active, active.presentation.error ?? failureMessage());
       }
       if (!holdProviderReviewQueuedInputs(current.state, current.sessionKey, current.agentId)) {
-        update(current, { error: t("chat.providerReview.queueHoldFailed") });
+        update(active, { error: t("chat.providerReview.queueHoldFailed") });
         return;
       }
-      // Request claims stay synchronous: Solid's presentation writes are deferred.
-      continuationInFlight = current;
-      current.attemptedRunId = current.idempotencyKey;
-      update(current, { pending: true, error: null });
-      try {
-        const result = await current.client!.request("sessions.providerReview.continue", {
-          sessionKey: current.sessionKey,
-          ...(current.agentId ? { agentId: current.agentId } : {}),
-          sessionId: current.sessionId,
-          reviewId: current.review.id,
-          idempotencyKey: current.idempotencyKey,
-        });
-        if (!isCurrent(current)) {
-          return;
-        }
-        const ack = normalizeChatSendAck(result, current.idempotencyKey);
-        if (isTerminalFailureChatSendAck(ack)) {
-          recordFailedAttempt(current, failureMessage());
-          return;
-        }
-        current.attemptedRunId = ack.runId;
-        current.accepted = true;
-        update(current, { submitted: true });
-        // A transport ACK does not clear the pause. Only the canonical row can do that.
-        await refresh(current);
-      } catch (error) {
-        update(current, { error: formatUiError(error) });
-      } finally {
-        if (continuationInFlight === current) {
-          continuationInFlight = null;
-        }
-        update(current, { pending: false });
-      }
+      current.continuing = true;
+      // Flush the owner's immediate queue hold before opening the presentation transaction.
+      return Promise.resolve().then(() => continueReview(active));
     },
   };
 }
