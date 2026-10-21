@@ -147,7 +147,7 @@ export type ScheduledAdmissionFacts = Readonly<{
   requesterCheck?: Readonly<{ owner: boolean }>;
 }>;
 
-type ScheduledParentUnavailableReason = "removed" | "archived" | "reset" | "worktree-missing";
+type ScheduledParentUnavailableReason = "removed" | "archived" | "worktree-missing";
 
 export type ScheduledExecutionContextResult =
   | Readonly<{ status: "ready"; facts: ScheduledExecutionFacts }>
@@ -255,7 +255,7 @@ function resolvePrincipal(
 function classifyParent(
   parent: ScheduledParentRef,
   row: ScheduledParentRowFacts | undefined,
-): ScheduledParentUnavailableReason | "current" | "unread" {
+): ScheduledParentUnavailableReason | "reset" | "current" | "unread" {
   if (!row) {
     return "unread";
   }
@@ -357,17 +357,23 @@ export function buildScheduledExecutionContext(
   if (job.sessionTarget === "main") {
     return { status: "fail", error: "main-session jobs run inside the main session's own turn" };
   }
-  const principal = resolvePrincipal(job, facts);
-  if ("error" in principal) {
-    return { status: "fail", error: principal.error };
+  const resolved = resolvePrincipal(job, facts);
+  if ("error" in resolved) {
+    return { status: "fail", error: resolved.error };
   }
-  const parentRow = principal.kind === "parent" ? facts.parentRow : undefined;
+  let principal: ScheduledPrincipal = resolved;
+  let parentRow = principal.kind === "parent" ? facts.parentRow : undefined;
   if (principal.kind === "parent") {
     const state = classifyParent(principal.parent, parentRow);
     if (state === "unread") {
       return { status: "fail", error: "parent session facts are required for a parent-linked job" };
     }
-    if (state !== "current") {
+    if (state === "reset") {
+      // A reset keeps the automation running, but nothing carries into the new
+      // incarnation: this occurrence takes the legacy decisions until rebound.
+      principal = { kind: "unbound-parent", parentSessionKey: principal.parent.sessionKey };
+      parentRow = undefined;
+    } else if (state !== "current") {
       return { status: "pause", reason: state, parentSessionKey: principal.parent.sessionKey };
     }
   }

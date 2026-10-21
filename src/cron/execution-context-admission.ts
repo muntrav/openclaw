@@ -274,8 +274,8 @@ export function mintCronPromptExecutionContext(
 
 /**
  * Pre-session parent check for jobs linked to an exact parent conversation.
- * Returns the pause reason when the parent is removed, archived or reset, or its
- * bound worktree is gone. Read failures never pause a job.
+ * Returns the pause reason when the parent is removed or archived, or its bound
+ * worktree is gone. A reset parent never pauses, and read failures never pause a job.
  */
 export async function resolveScheduledParentPause(params: {
   cfg: OpenClawConfig;

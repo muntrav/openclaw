@@ -15,6 +15,16 @@ import { makeIsolatedAgentJobFixture, makeIsolatedAgentParamsFixture } from "./j
 import { setupRunCronIsolatedAgentTurnSuite } from "./run.suite-helpers.js";
 import * as h from "./run.test-harness.js";
 
+const { readSessionEntryInWorkerMock } = vi.hoisted(() => ({
+  readSessionEntryInWorkerMock: vi.fn(),
+}));
+
+// The harness keeps session rows in the cron session mock; parent checks read the worker.
+vi.mock("../../config/sessions/session-entry-read-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/session-entry-read-runtime.js")>()),
+  readSessionEntryInWorker: readSessionEntryInWorkerMock,
+}));
+
 function expectCall(mock: unknown, fields: Record<string, unknown>) {
   expect(mock).toHaveBeenCalledWith(expect.objectContaining(fields));
 }
@@ -380,6 +390,7 @@ describe("runCronIsolatedAgentTurn session cleanup", () => {
       h.resolveCronSessionMock.mockReturnValue(
         h.makeCronSession({ store: { [source.sessionKey]: sourceEntry } }),
       );
+      readSessionEntryInWorkerMock.mockResolvedValue(sourceEntry);
       h.readSessionMessagesAsyncMock.mockResolvedValue([
         { role: "user", content: "Otters hold hands while sleeping." },
         { role: "assistant", content: "Got it." },

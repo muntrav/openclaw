@@ -190,10 +190,17 @@ describe("resolveScheduledParentPause", () => {
   it.each([
     ["removed", undefined],
     ["archived", { sessionId: "parent-session", lifecycleRevision: "rev-1", archivedAt: 1 }],
-    ["reset", { sessionId: "parent-session", lifecycleRevision: "rev-2" }],
   ] as const)("pauses when the parent is %s", async (reason, entry) => {
     readSessionEntryInWorker.mockResolvedValue(entry);
     await expect(check(linked)).resolves.toEqual({ reason, parentSessionKey: PARENT_KEY });
+  });
+
+  it("keeps running when the parent was reset", async () => {
+    readSessionEntryInWorker.mockResolvedValue({
+      sessionId: "new-session",
+      lifecycleRevision: "rev-2",
+    });
+    await expect(check(linked)).resolves.toBeUndefined();
   });
 
   it("runs when the parent is current", async () => {
