@@ -49,6 +49,7 @@ jobs:
           node --import ./scripts/tsx.mjs scripts/package-openclaw-for-docker.mjs \
             --allow-unreleased-changelog \
             --skip-build \
+            --pnpm-pack \
             --output-dir artifact
           test "$(find artifact -maxdepth 1 -name '*.tgz' | wc -l)" -eq 1
 
