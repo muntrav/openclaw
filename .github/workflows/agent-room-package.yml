@@ -43,10 +43,13 @@ jobs:
       - name: Build package
         run: pnpm build:package
 
-      - name: Pack package
+      - name: Pack installable package
         run: |
           mkdir -p artifact
-          npm pack --pack-destination artifact
+          node --import ./scripts/tsx.mjs scripts/package-openclaw-for-docker.mjs \
+            --allow-unreleased-changelog \
+            --skip-build \
+            --output-dir artifact
           test "$(find artifact -maxdepth 1 -name '*.tgz' | wc -l)" -eq 1
 
       - name: Upload package artifact
