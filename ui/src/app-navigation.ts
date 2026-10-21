@@ -19,6 +19,7 @@ type NavigationPresentation = readonly [icon: IconName, titleKey: string, subtit
 // Workboard is plugin-owned and enters the zone through its Control UI descriptor.
 export const SIDEBAR_NAV_ROUTES = [
   "agents-home",
+  "agent-rooms",
   "dashboards",
   "usage",
   "cron",
@@ -290,6 +291,7 @@ function navigationPresentation(icon: IconName, key: string): NavigationPresenta
 const NAVIGATION_PRESENTATION: Record<NavigationRouteId, NavigationPresentation> = {
   settings: ["settings", "nav.settings", "common.settingsSections"],
   "agents-home": navigationPresentation("bot", "agentsHome"),
+  "agent-rooms": navigationPresentation("users", "agentRooms"),
   claws: navigationPresentation("bot", "claws"),
   agents: navigationPresentation("bot", "agents"),
   activity: navigationPresentation("activity", "activity"),

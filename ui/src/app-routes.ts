@@ -31,6 +31,7 @@ import { i18n } from "./i18n/lib/translate.ts";
 import { page as aboutPage } from "./pages/about/route.ts";
 import { page as activityPage } from "./pages/activity/route.ts";
 import { page as agentsHomePage } from "./pages/agents-home/route.ts";
+import { page as agentRoomsPage } from "./pages/agent-rooms/route.ts";
 import { page as agentsPage } from "./pages/agents/route.ts";
 import { page as approvalsPage } from "./pages/approvals/route.ts";
 import { page as appsPage } from "./pages/apps/route.ts";
@@ -96,6 +97,7 @@ const APP_ROUTE_TREE = [
   terminalPage,
   activityPage,
   meetingsPage,
+  agentRoomsPage,
   dashboardsPage,
   appsPage,
   portalsPage,
