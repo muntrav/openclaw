@@ -24,6 +24,7 @@ const {
   resolveScheduledParentPause,
 } = await import("./execution-context-admission.js");
 const { prepareCronRunAdmission } = await import("./run-admission.js");
+const { readScheduledToolTargets } = await import("./execution-context-registry.js");
 const { finalizeCliMcpGrant } = await import("../agents/cli-runner/mcp-grant-context.js");
 
 const PARENT_KEY = "agent:main:dashboard:parent";
@@ -140,6 +141,45 @@ describe("mintCronPromptExecutionContext", () => {
     );
     minted.release();
     expect(generationRelease).toHaveBeenCalledOnce();
+  });
+
+  it("exposes a child's board and media targets to tool construction for the run", async () => {
+    readSessionEntryInWorker.mockResolvedValue({
+      sessionId: "parent-session",
+      lifecycleRevision: "rev-1",
+    });
+    const minted = await mint(
+      job({
+        owner: { agentId: "main", sessionKey: PARENT_KEY, accountId: "default" },
+        scheduledToolPolicy: {
+          version: 1,
+          mode: "account",
+          ownerSessionKey: PARENT_KEY,
+          ownerAccountId: "default",
+        },
+        sourceConversation: {
+          sessionKey: PARENT_KEY,
+          sessionId: "parent-session",
+          lifecycleRevision: "rev-1",
+        },
+      }),
+    );
+    const admission = prepareCronRunAdmission({
+      cfg: {},
+      agentId: "main",
+      runId: "run-1",
+      sessionKey: "agent:main:cron:job-1:run:s1",
+      jobId: "job-1",
+      deliveryAttemptFence: null,
+      scheduledExecution: minted,
+    });
+    const admitted = await admission.preparedRunAdmission.admit("embedded");
+    expect(readScheduledToolTargets(admitted.operationalRunInstance)).toEqual({
+      boardSessionKey: PARENT_KEY,
+      mediaSessionKey: PARENT_KEY,
+    });
+    admission.close();
+    expect(readScheduledToolTargets(admitted.operationalRunInstance)).toBeUndefined();
   });
 
   it("reports a removed parent as a pause without throwing", async () => {

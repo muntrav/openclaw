@@ -5,6 +5,7 @@
  */
 import { access } from "node:fs/promises";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/user-profile-constants.js";
+import type { OperationalRunInstanceRef } from "../agents/operational-run-instance.js";
 import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
 import { resolveScheduledToolPolicyContext } from "../agents/scheduled-tool-policy.js";
 import { prepareCommandOwnerAuthority } from "../auto-reply/command-auth.js";
@@ -16,6 +17,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCreatorSandbox } from "../gateway/operator-role-policy.js";
 import { decodeGatewayOperatorRecoverySource } from "../gateway/operator-run-recovery-source.codec.js";
 import { captureResidentUserProfileAccess } from "../state/user-profile-list.js";
+import { bindScheduledExecutionFacts } from "./execution-context-registry.js";
 import {
   buildScheduledExecutionContext,
   resolveScheduledRequester,
@@ -49,7 +51,7 @@ type MintParams = {
 export type MintedScheduledExecution = Readonly<{
   result: ScheduledExecutionContextResult;
   /** Binds the context to the admitted run; the admission owner reads it through `current`. */
-  bind: (assertAdmitted: () => void) => void;
+  bind: (run: OperationalRunInstanceRef, assertAdmitted: () => void) => void;
   current: () => ScheduledExecutionContext | undefined;
   release: () => void;
 }>;
@@ -204,12 +206,14 @@ async function mintScheduledExecutionContext(
     result = { status: "fail", error: error instanceof Error ? error.message : String(error) };
   }
   let context: ScheduledExecutionContext | undefined;
+  let unbind = () => {};
   return {
     result,
-    bind(assertAdmitted) {
+    bind(run, assertAdmitted) {
       if (result.status !== "ready") {
         return;
       }
+      unbind = bindScheduledExecutionFacts(run, result.facts);
       context = {
         ...result.facts,
         assertCurrent: () => {
@@ -220,6 +224,8 @@ async function mintScheduledExecutionContext(
     },
     current: () => context,
     release() {
+      unbind();
+      unbind = () => {};
       context = undefined;
       releaseLease();
       releaseLease = () => {};

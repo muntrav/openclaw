@@ -256,10 +256,13 @@ function* createOpenClawToolsSteps(
     });
   const trimmedRunSessionKey = options?.runSessionKey?.trim();
   const requesterSessionKey = trimmedRunSessionKey || options?.agentSessionKey;
+  // A scheduled run's execution context names the session its board and media belong to.
+  const scheduledTargets = options?.scheduledToolTargets;
   const mediaGenerationAgentSessionKey =
-    trimmedRunSessionKey && isCronRunSessionKey(trimmedRunSessionKey)
+    scheduledTargets?.mediaSessionKey ??
+    (trimmedRunSessionKey && isCronRunSessionKey(trimmedRunSessionKey)
       ? trimmedRunSessionKey
-      : options?.agentSessionKey;
+      : options?.agentSessionKey);
   const imageTool =
     options?.agentDir &&
     resolveImageToolFactoryAvailable({
@@ -402,6 +405,7 @@ function* createOpenClawToolsSteps(
     allowlist: options?.runtimeToolAllowlist,
     denylist: explicitFactoryDenylist,
   });
+  const widgetSessionKey = scheduledTargets?.boardSessionKey ?? sessionKey;
   // Admitted Control UI recovery and explicitly capped scheduled turns can
   // keep authoring their durable board without claiming an inline renderer.
   const pinnedWidgetOnly =
@@ -409,8 +413,8 @@ function* createOpenClawToolsSteps(
       (options?.gatewayCallerScheduled === true && scheduledWidgetExplicitlyAllowed)) &&
     !inlineWidgetClientAvailable &&
     !widgetPresentation.currentChannelPresenter &&
-    Boolean(sessionKey) &&
-    !isCronRunSessionKey(sessionKey);
+    Boolean(widgetSessionKey) &&
+    !isCronRunSessionKey(widgetSessionKey);
   const includeMessageTool =
     !embedded ||
     options?.sourceReplyDeliveryMode === "message_tool_only" ||
@@ -444,7 +448,8 @@ function* createOpenClawToolsSteps(
   const tools: AnyAgentTool[] = [
     ...createInstalledSkillTools(options?.installedSkills ?? []),
     createDashboardTool({
-      agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
+      agentSessionKey:
+        scheduledTargets?.boardSessionKey ?? options?.runSessionKey ?? options?.agentSessionKey,
       agentId: sessionAgentId,
     }),
     ...(embedded
@@ -516,7 +521,7 @@ function* createOpenClawToolsSteps(
       : createShowWidgetTool({
           sessionId: options?.sessionId,
           agentId: sessionAgentId,
-          agentSessionKey: sessionKey,
+          agentSessionKey: widgetSessionKey,
           inlineHostEnabled: isCoreCanvasHostEnabled(resolvedConfig),
           inlineClientAvailable: inlineWidgetClientAvailable,
           pinnedOnly: pinnedWidgetOnly,
