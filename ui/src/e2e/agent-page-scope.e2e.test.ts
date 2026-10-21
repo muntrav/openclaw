@@ -320,12 +320,12 @@ suite.define(() => {
             return null;
           }
           return {
-            belowCard: menu.y >= card.y + card.height,
-            anchoredToCard: menu.x <= card.x + card.width && menu.x + menu.width >= card.x,
+            besideCard: menu.x >= card.x + card.width,
+            anchoredToCard: menu.y <= card.y + card.height && menu.y + menu.height >= card.y,
             inViewport: menu.x >= 0 && menu.x + menu.width <= page.viewportSize()!.width,
           };
         })
-        .toEqual({ belowCard: true, anchoredToCard: true, inViewport: true });
+        .toEqual({ besideCard: true, anchoredToCard: true, inViewport: true });
       await agentMenu.locator('[data-value="agent:writer"]').click();
       await waitForRequest(gateway, "sessions.list", (params) => params.agentId === "writer");
       await expectAgentName(sidebar, "Writer");
