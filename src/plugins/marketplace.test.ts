@@ -148,18 +148,6 @@ function mockRemoteMarketplaceClone(params: {
   });
 }
 
-async function expectRemoteMarketplaceError(params: { manifest: unknown; expectedError: string }) {
-  mockRemoteMarketplaceClone({ manifest: params.manifest });
-
-  const result = await listMarketplacePlugins({ marketplace: "owner/repo" });
-
-  expect(result).toEqual({
-    ok: false,
-    error: params.expectedError,
-  });
-  expect(runCommandWithTimeoutMock).toHaveBeenCalledTimes(1);
-}
-
 function expectRemoteCloneCommand() {
   expect(runCommandWithTimeoutMock).toHaveBeenCalledTimes(1);
   const [argv, options] = runCommandWithTimeoutMock.mock.calls[0] ?? [];
@@ -557,43 +545,28 @@ describe("marketplace plugins", () => {
   );
 
   it.each([
-    {
-      name: "rejects remote marketplace git plugin sources before cloning nested remotes",
-      manifest: manifestFor({ type: "git", url: "https://evil.example/repo.git" }),
-      expectedError:
-        'invalid marketplace entry "frontend-design" in owner/repo: ' +
-        "remote marketplaces may not use git plugin sources",
-    },
-    {
-      name: "rejects remote marketplace absolute plugin paths",
-      manifest: manifestFor({ type: "path", path: "/tmp/frontend-design" }),
-      expectedError:
-        'invalid marketplace entry "frontend-design" in owner/repo: ' +
-        "remote marketplaces may only use relative plugin paths",
-    },
-    {
-      name: "rejects remote marketplace HTTP plugin paths",
-      manifest: manifestFor({ type: "path", path: "https://evil.example/plugin.tgz" }),
-      expectedError:
-        'invalid marketplace entry "frontend-design" in owner/repo: ' +
-        "remote marketplaces may not use HTTP(S) plugin paths",
-    },
-  ] as const)("$name", async ({ manifest, expectedError }) => {
-    await expectRemoteMarketplaceError({ manifest, expectedError });
-  });
-
-  it("reports missing remote marketplace paths as not found instead of escapes", async () => {
-    mockRemoteMarketplaceClone({
-      manifest: manifestFor({ type: "path", path: "plugins/missing-plugin" }),
-    });
-
-    const result = await listMarketplacePlugins({ marketplace: "owner/repo" });
-
-    expect(result).toEqual({
+    [
+      { type: "git", url: "https://evil.example/repo.git" },
+      "remote marketplaces may not use git plugin sources",
+    ],
+    [
+      { type: "path", path: "/tmp/frontend-design" },
+      "remote marketplaces may only use relative plugin paths",
+    ],
+    [
+      { type: "path", path: "https://evil.example/plugin.tgz" },
+      "remote marketplaces may not use HTTP(S) plugin paths",
+    ],
+    [
+      { type: "path", path: "plugins/missing-plugin" },
+      "plugin source not found in marketplace root: plugins/missing-plugin",
+    ],
+  ] as const)("rejects remote source %j: %s", async (source, error) => {
+    mockRemoteMarketplaceClone({ manifest: manifestFor(source) });
+    expect(await listMarketplacePlugins({ marketplace: "owner/repo" })).toEqual({
       ok: false,
-      error:
-        'invalid marketplace entry "frontend-design" in owner/repo: ' +
-        "plugin source not found in marketplace root: plugins/missing-plugin",
+      error: `invalid marketplace entry "frontend-design" in owner/repo: ${error}`,
     });
+    expect(runCommandWithTimeoutMock).toHaveBeenCalledTimes(1);
   });
 });
