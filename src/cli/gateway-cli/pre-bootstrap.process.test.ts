@@ -140,18 +140,12 @@ describe("Gateway config selection before migration admission", () => {
       apiKey: { source: "env", provider: "default", id: "REPRO_PROVIDER_KEY" },
       managed: true,
     },
-    { name: "native artifacts without backup", native: true, included: false },
-    { name: "native artifacts with backup", native: true, included: true },
   ])(
-    "preserves $name and state artifacts through startup",
-    async ({ apiKey, managed, included, native }) => {
-      const { root, stateDir, configPath, env, options } = createFixture(
+    "preserves $name through startup without writing config",
+    async ({ apiKey, managed, included }) => {
+      const { stateDir, configPath, env, options } = createFixture(
         "openclaw-managed-env-selection-",
       );
-      const plugins = {
-        enabled: false,
-        installs: { example: { source: "path", installPath: path.join(root, "plugin") } },
-      };
       const providers = {
         minimax: {
           baseUrl: "https://api.minimax.io/anthropic",
@@ -160,83 +154,49 @@ describe("Gateway config selection before migration admission", () => {
           models: [],
         },
       };
-      if (included && !native) {
+      if (included) {
         writeJson(path.join(stateDir, "providers.json"), providers);
       }
       writeJson(configPath, {
         gateway: { mode: "local" },
-        meta: { lastTouchedAt: "2026-02-15T00:00:00.000Z" },
-        agents: { entries: { main: {}, helper: {} } },
-        plugins,
-        ...(!native && {
-          messages: { responsePrefix: "$${STALE_KEY}" },
-          models: { providers: included ? { $include: "providers.json" } : providers },
-        }),
+        plugins: { enabled: false },
+        messages: { responsePrefix: "$${STALE_KEY}" },
+        models: { providers: included ? { $include: "providers.json" } : providers },
       });
-      if (included) {
-        writeJson(`${configPath}.bak`, {
-          gateway: { mode: "local" },
-          agents: { defaults: { workspace: path.join(root, "workspace") } },
-          messages: { ackReaction: "synthetic long-lived config baseline" },
-          plugins,
-        });
-      }
       const before = stateManifest(stateDir);
       const result = await runIsolatedModuleScript(
         {
-          ...(native ? process.env : {}),
           ...env,
-          ...(!native && {
-            INVOCATION_ID: "repro",
-            REPRO_PROVIDER_KEY: "repro-not-a-real-key",
-            STALE_KEY: "removed-service-value",
-            OPENCLAW_SERVICE_MANAGED_ENV_KEYS: managed
-              ? "REPRO_PROVIDER_KEY,STALE_KEY"
-              : "STALE_KEY",
-          }),
-          OPENCLAW_TEST_FAST: "1",
-          OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+          INVOCATION_ID: "repro",
+          REPRO_PROVIDER_KEY: "repro-not-a-real-key",
+          STALE_KEY: "removed-service-value",
+          OPENCLAW_SERVICE_MANAGED_ENV_KEYS: managed ? "REPRO_PROVIDER_KEY,STALE_KEY" : "STALE_KEY",
         },
         `
-        ${native ? "" : 'Object.defineProperty(process, "platform", { value: "linux" });'}
+        Object.defineProperty(process, "platform", { value: "linux" });
         const { selectGatewayRunEnvironment, prepareGatewayRunBootstrap, recheckGatewayRunBootstrap } = await import("./src/cli/gateway-cli/pre-bootstrap.ts");
         const { ExitError } = await import("./src/runtime.ts");
-        const { consumeGatewayBootstrapSteps } = await import("./src/cli/startup-trace.ts");
         const runtime = { log() {}, error: console.error, exit(code) { throw new ExitError(code); } };
         let admitted = false;
-        let steps = [];
         try {
           if (await selectGatewayRunEnvironment({ opts: {}, runtime }) &&
               await prepareGatewayRunBootstrap({ opts: {}, runtime })) {
-            steps = consumeGatewayBootstrapSteps().map(({ name, calls }) => ({ name, calls }));
             admitted = await recheckGatewayRunBootstrap({ opts: {}, runtime });
           }
         } catch (error) {
           if (!(error instanceof ExitError)) throw error;
         }
-        console.log("__RESULT__" + JSON.stringify({ admitted, steps, ...(${!native} ? {
+        console.log("__RESULT__" + JSON.stringify({ admitted,
           keyPresent: process.env.REPRO_PROVIDER_KEY === "repro-not-a-real-key",
           stalePresent: process.env.STALE_KEY !== undefined,
-        } : {}) }));
+        }));
         `,
         options,
       );
       expect(readResult(result)).toEqual({
         admitted: true,
-        ...(!native && { keyPresent: true, stalePresent: false }),
-        steps: expect.arrayContaining(
-          [
-            "imports",
-            "dotenv",
-            "config-import",
-            "config.snapshot.read.file",
-            "config.snapshot.read.validate",
-            "config-recovery",
-          ].map((name) => ({
-            name: `cli.environment.${name}`,
-            calls: 2,
-          })),
-        ),
+        keyPresent: true,
+        stalePresent: false,
       });
       expect(stateManifest(stateDir)).toEqual(before);
     },
@@ -321,6 +281,64 @@ describe("Gateway config selection before migration admission", () => {
       expect(stateManifest(stateDir)).toEqual(before);
     },
     75_000,
+  );
+
+  it.each([false, true])(
+    "preserves every state artifact with backup=%s",
+    async (withBackup) => {
+      const { root, stateDir, configPath, env, options } = createFixture(
+        "openclaw-readonly-bootstrap-",
+      );
+      const plugins = {
+        enabled: false,
+        installs: { example: { source: "path", installPath: path.join(root, "plugin") } },
+      };
+      writeJson(configPath, {
+        gateway: { mode: "local" },
+        meta: { lastTouchedAt: "2026-02-15T00:00:00.000Z" },
+        agents: { entries: { main: {}, helper: {} } },
+        plugins,
+      });
+      if (withBackup) {
+        writeJson(`${configPath}.bak`, {
+          gateway: { mode: "local" },
+          agents: { defaults: { workspace: path.join(root, "workspace") } },
+          messages: { ackReaction: "synthetic long-lived config baseline" },
+          plugins,
+        });
+      }
+      const before = stateManifest(stateDir);
+      const inheritedEnv = {
+        ...process.env,
+        ...env,
+        OPENCLAW_TEST_FAST: "1",
+        OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+      };
+      const result = await runIsolatedModuleScript(
+        inheritedEnv,
+        `
+      const { selectGatewayRunEnvironment, prepareGatewayRunBootstrap } = await import("./src/cli/gateway-cli/pre-bootstrap.ts");
+      const runtime = { log() {}, error() {}, exit(code) { throw new Error("unexpected exit " + code); } };
+      if (!await selectGatewayRunEnvironment({ opts: {}, runtime })) throw new Error("selection refused");
+      if (!await prepareGatewayRunBootstrap({ opts: {}, runtime })) throw new Error("preparation refused");
+      const { consumeGatewayBootstrapSteps } = await import("./src/cli/startup-trace.ts");
+      console.log("__RESULT__" + JSON.stringify(consumeGatewayBootstrapSteps().map(({ name, calls }) => ({ name, calls }))));
+    `,
+        options,
+      );
+      expect(readResult(result)).toEqual(
+        expect.arrayContaining([
+          { name: "cli.environment.imports", calls: 2 },
+          { name: "cli.environment.dotenv", calls: 2 },
+          { name: "cli.environment.config-import", calls: 2 },
+          { name: "cli.environment.config.snapshot.read.file", calls: 2 },
+          { name: "cli.environment.config.snapshot.read.validate", calls: 2 },
+          { name: "cli.environment.config-recovery", calls: 2 },
+        ]),
+      );
+      expect(stateManifest(stateDir)).toEqual(before);
+    },
+    90_000,
   );
 
   it.each([
