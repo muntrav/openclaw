@@ -71,6 +71,10 @@ describe("native notification test outcome", () => {
     flush();
     expect(button.disabled).toBe(true);
     expect(button.textContent).toContain("Sending test");
+    expect(container.querySelector(".settings-status--accent")?.textContent).toContain(
+      "Sending test",
+    );
+    expect(container.textContent).toContain("Test notification");
     button.click();
     expect(onSend).toHaveBeenCalledTimes(1);
     completion.resolve(undefined);

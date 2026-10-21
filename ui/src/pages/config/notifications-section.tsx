@@ -416,7 +416,7 @@ function NativeNotificationSection(props: {
   });
   const testDescription = () => {
     const test = props.native.test;
-    return test?.state === "error" ? test.message : undefined;
+    return !testPending() && test?.state === "error" ? test.message : undefined;
   };
   return (
     <NotificationSection
@@ -459,25 +459,25 @@ function NativeNotificationSection(props: {
       <Show when={props.native.permission === "denied"}>
         <BlockedNotifications description={t("configView.notifications.nativeBlockedHint")} />
       </Show>
-      <Show when={props.native.test}>
-        {(test) => (
-          <SettingsRow
-            title={t("configView.notifications.testOutcome")}
-            description={testDescription()}
-            control={
-              <SettingsStatus
-                kind={testPending() ? "accent" : test().state === "sent" ? "ok" : "danger"}
-                label={t(
-                  testPending()
-                    ? "configView.notifications.sendingTest"
-                    : test().state === "sent"
-                      ? "configView.notifications.testQueued"
-                      : "configView.notifications.testFailed",
-                )}
-              />
-            }
-          />
-        )}
+      <Show when={testPending() || props.native.test}>
+        <SettingsRow
+          title={t("configView.notifications.testOutcome")}
+          description={testDescription()}
+          control={
+            <SettingsStatus
+              kind={
+                testPending() ? "accent" : props.native.test?.state === "sent" ? "ok" : "danger"
+              }
+              label={t(
+                testPending()
+                  ? "configView.notifications.sendingTest"
+                  : props.native.test?.state === "sent"
+                    ? "configView.notifications.testQueued"
+                    : "configView.notifications.testFailed",
+              )}
+            />
+          }
+        />
       </Show>
     </NotificationSection>
   );

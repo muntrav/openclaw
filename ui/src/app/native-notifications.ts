@@ -1,4 +1,3 @@
-import { createDeferredCore, type Deferred } from "../../../src/shared/deferred.ts";
 import { listen } from "../lib/reactive/listener.ts";
 import { webKitHostWindow } from "./native-webkit-bridge.ts";
 
@@ -71,7 +70,7 @@ export function createNativeNotificationsCapability() {
     test: null,
   };
   let render: ((snapshot: NativeNotificationsSnapshot) => void) | undefined;
-  let testCompletion: Deferred<NativeNotificationTestOutcome | undefined> | undefined;
+  let testCompletion: PromiseWithResolvers<NativeNotificationTestOutcome | undefined> | undefined;
   let testAcknowledged = false;
 
   const publish = (next: NativeNotificationsSnapshot) => {
@@ -121,7 +120,7 @@ export function createNativeNotificationsCapability() {
       if (snapshot.test?.state === "pending") {
         return undefined;
       }
-      testCompletion = createDeferredCore();
+      testCompletion = Promise.withResolvers();
       // A focus/status reply may still carry the previous test's terminal outcome.
       testAcknowledged = false;
       publish({ ...snapshot, test: { state: "pending" } });
