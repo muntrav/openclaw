@@ -56,6 +56,7 @@ describe("background reindex resumption", () => {
   it.for([
     "idle",
     "watch",
+    "joined",
     "bootstrap",
     "changed",
     "targeted",
@@ -130,6 +131,7 @@ describe("background reindex resumption", () => {
       const shadowPaths = new Set<string>();
       const groups: string[][] = [];
       const memoryWrites: string[] = [];
+      let joined: Promise<void> | undefined;
       let injectedFailures = 0;
       // Delegate every write: interruption follows a durably completed source group.
       // oxlint-disable-next-line typescript/unbound-method -- Called with the intercepted owner.
@@ -154,6 +156,10 @@ describe("background reindex resumption", () => {
             groups.push(sessionReplacements.map((item) => item.entry.path));
             if (groups.length === 1) {
               activity.listener?.(true);
+              if (resume === "joined") {
+                joined = manager.sync({ reason: "cli" });
+                void joined.catch(() => undefined);
+              }
             }
           }
         }
@@ -195,6 +201,7 @@ describe("background reindex resumption", () => {
           await vi.advanceTimersByTimeAsync(30_000);
         }
         await idle();
+        await joined;
         expect(groups).toHaveLength(1);
         expect(groups[0]).toHaveLength(8);
         expect(memoryWrites.toSorted()).toEqual(memoryPaths.toSorted());

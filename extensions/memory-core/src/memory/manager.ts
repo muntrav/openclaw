@@ -387,17 +387,18 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
         return this.sessionSyncQueue.enqueue(params);
       }
       try {
+        const joinedWatchGeneration = this.syncingMemoryWatchGeneration;
         await this.syncing;
-        // Every joining caller must drain watch events accepted after source
-        // planning; the old promise alone does not publish those files.
-        if (
-          !this.closing &&
-          !this.closed &&
-          (this.syncing !== null ||
-            this.reindexProgress ||
-            (this.dirty && this.memoryWatchGeneration > this.syncingMemoryWatchGeneration))
-        ) {
-          return await this.syncAdmitted(params, options);
+        if (!this.closing && !this.closed) {
+          // Join only newer watch generations; dirty or suspended work alone cannot
+          // authorize a new pass. Another waiter may already own the next generation.
+          const nextSync = this.syncing;
+          if (nextSync !== null && this.syncingMemoryWatchGeneration > joinedWatchGeneration) {
+            return await nextSync;
+          }
+          if (this.dirty && this.memoryWatchGeneration > joinedWatchGeneration) {
+            return await this.syncAdmitted(params, options);
+          }
         }
         return;
       } catch (err) {
@@ -414,8 +415,6 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
         throw err;
       }
     }
-    // An intentional no-progress pass may remain dirty. Only newly accepted
-    // watch facts can admit another pass; joined callers cannot spin on dirty.
     this.syncingMemoryWatchGeneration = this.memoryWatchGeneration;
     const run = async () => {
       this.syncIsBackground = options?.background ?? false;
