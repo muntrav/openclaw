@@ -8,7 +8,7 @@ import { registerExecApprovalsCli } from "./exec-approvals-cli.js";
 
 const mocks = await vi.hoisted(async () => {
   const { createCliRuntimeMock } = await import("./test-runtime-mock.js");
-  const { defaultRuntime, runtimeErrors } = createCliRuntimeMock(vi);
+  const { defaultRuntime, runtimeErrors, runtimeLogs } = createCliRuntimeMock(vi);
   const readBestEffortConfig = vi.fn(async () => ({}));
   return {
     callGatewayFromCli: vi.fn(
@@ -46,10 +46,17 @@ const mocks = await vi.hoisted(async () => {
     defaultRuntime,
     readBestEffortConfig,
     runtimeErrors,
+    runtimeLogs,
   };
 });
 
-export const { callGatewayFromCli, defaultRuntime, readBestEffortConfig, runtimeErrors } = mocks;
+export const {
+  callGatewayFromCli,
+  defaultRuntime,
+  readBestEffortConfig,
+  runtimeErrors,
+  runtimeLogs,
+} = mocks;
 export const localSnapshot: ExecApprovalsSnapshot = {
   path: "/tmp/local-exec-approvals.json",
   exists: true,
@@ -150,11 +157,12 @@ vi.mock("../infra/exec-approvals-socket.js", () => ({
 }));
 
 export function loggedOutput(): string {
-  return defaultRuntime.log.mock.calls.map(([line]) => String(line ?? "")).join("\n");
+  return runtimeLogs.join("\n");
 }
 
 export function resetExecApprovalsCliMocks(): void {
   resetLocalSnapshot();
+  runtimeLogs.length = 0;
   runtimeErrors.length = 0;
   callGatewayFromCli.mockClear();
   readBestEffortConfig.mockClear();

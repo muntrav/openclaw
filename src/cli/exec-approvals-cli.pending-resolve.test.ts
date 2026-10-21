@@ -8,7 +8,7 @@ const mocks = await vi.hoisted(async () => {
   return { callGatewayFromCli: vi.fn(), ...createCliRuntimeMock(vi) };
 });
 
-const { callGatewayFromCli, defaultRuntime, runtimeErrors } = mocks;
+const { callGatewayFromCli, defaultRuntime, runtimeErrors, runtimeLogs } = mocks;
 
 const requireRecord = createRequireRecord("record", "expected-label-capitalized");
 
@@ -17,7 +17,7 @@ function writtenJson(): Record<string, unknown> {
 }
 
 function runtimeOutput(): string {
-  return defaultRuntime.log.mock.calls.map(([line]) => String(line ?? "")).join("\n");
+  return runtimeLogs.join("\n");
 }
 
 function approvalDisplayId(id: string): string {
@@ -104,6 +104,7 @@ describe("exec approvals pending and resolve CLI", () => {
   };
 
   beforeEach(() => {
+    runtimeLogs.length = 0;
     runtimeErrors.length = 0;
     callGatewayFromCli.mockClear();
     defaultRuntime.log.mockClear();

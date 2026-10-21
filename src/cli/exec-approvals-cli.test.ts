@@ -17,6 +17,7 @@ const {
   resetExecApprovalsCliMocks,
   runApprovalsCommand,
   runtimeErrors,
+  runtimeLogs,
   setLocalSocket,
 } = await import("./exec-approvals-cli.test-support.js");
 
@@ -76,11 +77,9 @@ describe("exec approvals CLI", () => {
 
     expectGatewayCall(0, method, target === "node" ? { nodeId: "node-1" } : {});
     expectGatewayCall(1, "config.get", {});
-    expect(
-      defaultRuntime.log.mock.calls.filter(([line]) =>
-        String(line ?? "").includes(SESSION_EXEC_OVERRIDES_NOTE),
-      ),
-    ).toHaveLength(1);
+    expect(runtimeLogs.filter((line) => line.includes(SESSION_EXEC_OVERRIDES_NOTE))).toHaveLength(
+      1,
+    );
     expect(runtimeErrors).toHaveLength(0);
   });
 
@@ -542,6 +541,7 @@ describe("exec approvals allowlist JSON no-ops", () => {
         updateExecApprovals.mockClear();
         callGatewayFromCli.mockClear();
         defaultRuntime.log.mockClear();
+        runtimeLogs.length = 0;
         defaultRuntime.writeJson.mockClear();
         if (method) {
           callGatewayFromCli.mockResolvedValueOnce(snapshot);

@@ -522,8 +522,8 @@ describe("capability cli", () => {
     timeoutMs?: unknown;
   };
 
-  function callArg<T>(mock: { mock: { calls: unknown[][] } }, index = 0): T | undefined {
-    return mock.mock.calls[index]?.[0] as T | undefined;
+  function callArg<T>(mock: { mock: { calls: T[][] } }, index = 0): T | undefined {
+    return mock.mock.calls[index]?.[0];
   }
   const firstGatewayCall = () => callArg<GatewayCall>(mocks.callGateway);
   const firstCompletionCall = () =>
