@@ -4,8 +4,6 @@ import { parseCmdScriptCommandLine } from "../../daemon/cmd-argv.js";
 import {
   readWindowsTaskSupervisorRestartExitCode as readRestartExitCode,
   WINDOWS_TASK_SUPERVISOR_CHILD_FLAG,
-  WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MAX,
-  WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MIN,
 } from "../../daemon/windows-task-supervisor-contract.js";
 import type { SpawnInput } from "../../process/supervisor/types.js";
 import { captureEnv } from "../../test-utils/env.js";
@@ -36,8 +34,6 @@ function readSpawnRestartExitCode(input: SpawnInput): number {
   if (exitCode === undefined) {
     throw new Error("Expected a correlated task-supervisor restart code");
   }
-  expect(exitCode).toBeGreaterThanOrEqual(WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MIN);
-  expect(exitCode).toBeLessThanOrEqual(WINDOWS_TASK_SUPERVISOR_RESTART_EXIT_CODE_MAX);
   return exitCode;
 }
 

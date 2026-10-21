@@ -1,6 +1,7 @@
 import "../../test-utils/prepare-compiled-subprocesses.js";
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { runRegisteredCli } from "../../test-utils/command-runner.js";
 import { registerGatewayCli } from "./register.js";
 
 const mocks = vi.hoisted(() => ({
@@ -25,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   formatHealthChannelLines: vi.fn(() => []),
   gatewayStatusCommand: vi.fn(async (_opts: unknown, _runtime: unknown) => {}),
   gatewayAuthTokenCommand: vi.fn(async (_runtime: unknown) => {}),
+  consumeGatewayRestartHandoffSync: vi.fn(),
   defaultRuntime: {
     log: vi.fn(),
     error: vi.fn(),
@@ -32,6 +34,10 @@ const mocks = vi.hoisted(() => ({
     writeJson: vi.fn(),
     exit: vi.fn(),
   },
+}));
+
+vi.mock("../../infra/restart-handoff.js", () => ({
+  consumeGatewayRestartHandoffSync: mocks.consumeGatewayRestartHandoffSync,
 }));
 
 const { callGatewayCli, emitReachableGatewayAuthDiagnostic, gatewayStatusCommand, defaultRuntime } =
@@ -319,5 +325,64 @@ describe("gateway register option collisions", () => {
     expect(loadGatewayHealthModule).toHaveBeenCalledOnce();
     expect(loadHealthStyleModule).toHaveBeenCalledOnce();
     expect(defaultRuntime.log).toHaveBeenCalledWith("Gateway Health");
+  });
+});
+
+describe("gateway restart-handoff commands", () => {
+  const run = (...args: string[]) =>
+    runRegisteredCli({
+      register: registerGatewayCli,
+      argv: ["gateway", "restart-handoff", ...args, "--json"],
+    });
+  const expectJson = (fields: Record<string, unknown>) =>
+    expect(defaultRuntime.writeJson).toHaveBeenCalledWith({
+      protocol: "openclaw.gateway.restart-handoff",
+      protocolVersion: 1,
+      ...fields,
+    });
+  function expectError(reason: string, exitCode: number) {
+    expectJson({ ok: false, status: "error", reason });
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(exitCode);
+  }
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.consumeGatewayRestartHandoffSync.mockReset();
+  });
+  it("keeps the machine command group out of normal gateway help", () => {
+    const gateway = sharedProgram.commands.find((command) => command.name() === "gateway");
+    expect(gateway).toBeDefined();
+    expect(gateway?.helpInformation()).not.toContain("restart-handoff");
+  });
+  it("reports protocol version 1 capabilities", async () => {
+    await run("capabilities");
+    expectJson({ ok: true, operations: ["consume"] });
+  });
+  it("forwards a validated expected PID and wraps the consume result", async () => {
+    mocks.consumeGatewayRestartHandoffSync.mockReturnValue({ status: "none", reason: "missing" });
+    await run("consume", "--expected-pid", "4242");
+    expect(mocks.consumeGatewayRestartHandoffSync).toHaveBeenCalledWith({ expectedPid: 4242 });
+    expectJson({ ok: true, status: "none", reason: "missing" });
+  });
+  it.each([
+    { name: "missing", args: [] },
+    { name: "valueless", args: ["--expected-pid"] },
+    { name: "unsafe", args: ["--expected-pid", "9007199254740992"] },
+    { name: "dash-prefixed malformed", args: ["--expected-pid", "-invalid"] },
+    { name: "valid with an unknown option", args: ["--expected-pid", "4242", "--unknown"] },
+    { name: "repeated", args: ["--expected-pid", "111", "--expected-pid", "222"] },
+  ])("rejects $name expected PID values before touching the handoff store", async ({ args }) => {
+    await run("consume", ...args);
+    expect(mocks.consumeGatewayRestartHandoffSync).not.toHaveBeenCalled();
+    expectError("invalid-expected-pid", 2);
+  });
+  it("returns a stable machine error when the handoff store is unavailable", async () => {
+    mocks.consumeGatewayRestartHandoffSync.mockImplementation(() => {
+      throw new Error("database locked");
+    });
+    await run("consume", "--expected-pid", "4242");
+    expect(defaultRuntime.error).toHaveBeenCalledWith(
+      "Gateway restart handoff consume failed: Error: database locked",
+    );
+    expectError("store-unavailable", 1);
   });
 });
