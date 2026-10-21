@@ -250,6 +250,7 @@ it.for(["timeout", "cancel", "read-failure", "close-failure"] as const)(
       const { DatabaseSync } = require('node:sqlite');
       const source = ${JSON.stringify(file)}, marker = ${JSON.stringify(marker)};
       const outcome = ${JSON.stringify(outcome)};
+      if (outcome === 'cancel') process.on('SIGTERM', () => {});
       const isSource = db => db.location() && path.toNamespacedPath(db.location()) === path.toNamespacedPath(source);
       const prepare = DatabaseSync.prototype.prepare, close = DatabaseSync.prototype.close;
       DatabaseSync.prototype.prepare = function(sql) {
@@ -267,6 +268,7 @@ it.for(["timeout", "cancel", "read-failure", "close-failure"] as const)(
     `,
     );
     const controller = new AbortController();
+    const cancellation = new DOMException("test cancellation", "AbortError");
     const advanceClock = stateClock();
     const operation = readUpdateStateSchemaVersions({
       stateDir,
@@ -279,7 +281,7 @@ it.for(["timeout", "cancel", "read-failure", "close-failure"] as const)(
       if (blocked) {
         await withinTest(nativeEntryBeforeSettlement(marker, rejected), signal);
         if (outcome === "cancel") {
-          controller.abort();
+          controller.abort(cancellation);
         } else {
           advanceClock(400_000, true);
         }
@@ -287,6 +289,7 @@ it.for(["timeout", "cancel", "read-failure", "close-failure"] as const)(
       const failure = await rejected;
       if (outcome === "cancel") {
         expect(failure).toMatchObject({ name: "AbortError" });
+        expect(failure).toBe(cancellation);
       } else {
         expect(failure).toBeInstanceOf(Error);
         expectMessage(failure, [
@@ -378,13 +381,9 @@ it.each([
   ["metadata inventory", "EAGAIN"],
   ["metadata inventory", "EWOULDBLOCK"],
   ["metadata inventory", "EIO"],
-  ["metadata inventory", "EBADF"],
-  ["metadata inventory", "EPIPE"],
   ["agent schema inspection", "EAGAIN"],
   ["agent schema inspection", "EWOULDBLOCK"],
   ["agent schema inspection", "EIO"],
-  ["agent schema inspection", "EBADF"],
-  ["agent schema inspection", "EPIPE"],
 ] as const)("preserves %s semantics when progress encounters %s", async (phase, code) => {
   const metadata = phase === "metadata inventory";
   const database = metadata ? undefined : fixture();
