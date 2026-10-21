@@ -49,9 +49,12 @@ function clobberFiles(root: string) {
   return fs.readdirSync(root).filter((name) => name.startsWith("openclaw.json.clobbered."));
 }
 
-function expectUnchanged(root: string, configPath: string, original: string) {
+function expectUnchanged(root: string, configPath: string, original: string, backup?: string) {
   expect(fs.readFileSync(configPath, "utf8")).toBe(original);
   expect(clobberFiles(root)).toEqual([]);
+  if (backup !== undefined) {
+    expect(fs.readFileSync(`${configPath}.bak`, "utf8")).toBe(backup);
+  }
 }
 
 function expectArchived(root: string, original: string) {
@@ -59,6 +62,10 @@ function expectArchived(root: string, original: string) {
   expect(clobbered).toHaveLength(1);
   expect(fs.readFileSync(path.join(root, clobbered[0]!), "utf8")).toBe(original);
 }
+
+const withPromises = (overrides: Partial<typeof fs.promises>) => ({
+  fs: { ...fs, promises: { ...fs.promises, ...overrides } },
+});
 
 function fixture(
   options: ConfigIoFactoryOptions | ((configPath: string) => ConfigIoFactoryOptions) = {},
@@ -217,8 +224,7 @@ describe("prepared config recovery", () => {
         armed = true;
         await expect(plan.apply()).rejects.toBe(readError);
       }
-      expectUnchanged(root, configPath, original);
-      expect(fs.readFileSync(`${configPath}.bak`, "utf8")).toBe(backup);
+      expectUnchanged(root, configPath, original, backup);
     },
   );
 
@@ -233,8 +239,7 @@ describe("prepared config recovery", () => {
       },
     });
     await expect(prepare(io)).rejects.toMatchObject({ code: "CONFIG_READ_FAILED" });
-    expectUnchanged(root, configPath, original);
-    expect(fs.readFileSync(`${configPath}.bak`, "utf8")).toBe(backup);
+    expectUnchanged(root, configPath, original, backup);
   });
 
   it.each(["completed", "during-apply"] as const)(
@@ -341,11 +346,15 @@ describe("prepared config recovery", () => {
       expect(fs.existsSync(`${databasePath}-wal`)).toBe(false);
       const before = manifest(root);
       const plan = await recovery(io);
-      expect(plan.snapshot.raw).toBe(backup);
-      expect(plan.snapshot.path).toBe(configPath);
-      expect(plan.snapshot.config.gateway).toMatchObject({ mode: "local", port: 18720 });
-      expect(plan.snapshot.config.agents?.defaults?.compaction?.mode).toBe("safeguard");
-      expect(plan.snapshot.valid).toBe(true);
+      expect(plan.snapshot).toMatchObject({
+        raw: backup,
+        path: configPath,
+        valid: true,
+        config: {
+          gateway: { mode: "local", port: 18720 },
+          agents: { defaults: { compaction: { mode: "safeguard" } } },
+        },
+      });
       expect(env).not.toHaveProperty("RECOVERY_MARKER");
       expect(manifest(root)).toEqual(before);
 
@@ -384,22 +393,18 @@ describe("prepared config recovery", () => {
         observe: false,
         homedir: () => root,
         logger: { warn: vi.fn(), error: vi.fn() },
-        fs: {
-          ...fs,
-          promises: {
-            ...fs.promises,
-            writeFile: async (pathname, data, options) => {
-              await fs.promises.writeFile(pathname, data, options);
-              if (typeof pathname === "string" && pathname.startsWith(`${configPath}.clobbered.`)) {
-                if (lease) {
-                  lease.release();
-                } else {
-                  await fs.promises.writeFile(changedPath, concurrentRaw);
-                }
+        ...withPromises({
+          writeFile: async (pathname, data, options) => {
+            await fs.promises.writeFile(pathname, data, options);
+            if (typeof pathname === "string" && pathname.startsWith(`${configPath}.clobbered.`)) {
+              if (lease) {
+                lease.release();
+              } else {
+                await fs.promises.writeFile(changedPath, concurrentRaw);
               }
-            },
+            }
           },
-        },
+        }),
       });
       const plan = await recovery(io);
       await expect(plan.apply(lease?.heartbeat)).rejects.toThrow(
@@ -419,42 +424,33 @@ describe("prepared config recovery", () => {
     const warn = vi.fn();
     const { root, configPath, original, backup, io } = fixture({
       logger: { warn, error: vi.fn() },
-      fs: {
-        ...fs,
-        promises: {
-          ...fs.promises,
-          writeFile: async (target, data, options) => {
-            if (typeof target === "string" && target.includes(".clobbered.")) {
-              throw Object.assign(new Error("snapshot disk full"), { code: "ENOSPC" });
-            }
-            return fs.promises.writeFile(target, data, options);
-          },
+      ...withPromises({
+        writeFile: async (target, data, options) => {
+          if (typeof target === "string" && target.includes(".clobbered.")) {
+            throw Object.assign(new Error("snapshot disk full"), { code: "ENOSPC" });
+          }
+          return fs.promises.writeFile(target, data, options);
         },
-      },
+      }),
     });
     const plan = await recovery(io);
 
     await expect(plan.apply()).rejects.toThrow("Config backup recovery deferred");
 
-    expectUnchanged(root, configPath, original);
-    expect(fs.readFileSync(`${configPath}.bak`, "utf8")).toBe(backup);
+    expectUnchanged(root, configPath, original, backup);
     expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("recovery deferred"));
   });
 
   it("rejects failed replacement while retaining the original and its clobbered snapshot", async () => {
     const { root, configPath, original, io } = fixture((targetPath) => ({
-      fs: {
-        ...fs,
-        promises: {
-          ...fs.promises,
-          rename: async (source, target) => {
-            if (target === targetPath) {
-              throw Object.assign(new Error("recovery replacement denied"), { code: "EACCES" });
-            }
-            await fs.promises.rename(source, target);
-          },
+      ...withPromises({
+        rename: async (source, target) => {
+          if (target === targetPath) {
+            throw Object.assign(new Error("recovery replacement denied"), { code: "EACCES" });
+          }
+          await fs.promises.rename(source, target);
         },
-      },
+      }),
     }));
     const plan = await recovery(io);
     await expect(plan.apply()).rejects.toThrow("recovery replacement denied");
