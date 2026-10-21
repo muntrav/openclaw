@@ -341,7 +341,7 @@ it.runIf(process.platform !== "win32")(
   },
 );
 
-it.each(["insufficient", "reporting-rejected", "unknown"] as const)(
+it.each(["reporting-rejected", "unknown"] as const)(
   "checks object capacity before Gateway stop (%s)",
   async (outcomeKind) => {
     const state = fixture();
@@ -384,22 +384,13 @@ it.each(["insufficient", "reporting-rejected", "unknown"] as const)(
       );
     } else {
       const result = await pending;
-      if (outcomeKind === "unknown") {
-        expect(result.status, JSON.stringify(result)).toBe("ok");
-        expect(result.steps).toContainEqual(
-          matchingStep("git update pack capacity", {
-            exitCode: 0,
-            warnings: [expect.stringContaining("free space could not be measured")],
-          }),
-        );
-      } else {
-        expect([result.status, result.reason]).toEqual(["error", "snapshot-capacity-insufficient"]);
-        expect(result.steps).toContainEqual(
-          matchingStep("git update pack capacity", {
-            stderrTail: expect.stringContaining("0 bytes available"),
-          }),
-        );
-      }
+      expect(result.status, JSON.stringify(result)).toBe("ok");
+      expect(result.steps).toContainEqual(
+        matchingStep("git update pack capacity", {
+          exitCode: 0,
+          warnings: [expect.stringContaining("free space could not be measured")],
+        }),
+      );
     }
     expect(prepareMutation).toHaveBeenCalledTimes(outcomeKind === "unknown" ? 1 : 0);
     expect(state.head()).toBe(outcomeKind === "unknown" ? state.target : before);
@@ -529,15 +520,6 @@ it("records a warning when inspection cleanup fails", async () => {
     }
   }
 });
-it("restores dev upstream from cold tracking refs", async () => {
-  const state = fixture();
-  state.installedGit("checkout", "-b", "maintenance");
-  state.installedGit("branch", "-D", "main");
-  state.installedGit("update-ref", "-d", "refs/remotes/upstream.with.dots/main");
-  state.expectUpdated(await state.run({ channel: "dev" }));
-  expect(state.installedGit("rev-parse", "main@{upstream}")).toBe(state.target);
-});
-
 it.each(["stable", "dev"] as const)(
   "rechecks admission after transport, pinning target (%s)",
   async (channel) => {

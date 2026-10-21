@@ -665,6 +665,11 @@ describe("update-startup", () => {
   });
 
   it("announces and applies a dev git campaign without consulting npm", async () => {
+    writeDevGitInstallReceipt({
+      status: "error",
+      ts: Date.now() - 60_000,
+      reason: "managed-service-handoff-failed",
+    });
     mockDevGitStatus({
       branch: "HEAD",
       repositoryUrl: "https://github.com/example/openclaw",
@@ -687,6 +692,18 @@ describe("update-startup", () => {
 
     await checkAutomatically(autoConfig("dev"));
 
+    expect(checkUpdateStatus).toHaveBeenCalledWith({
+      root: "/opt/openclaw",
+      signal: expect.any(AbortSignal),
+      fetchGit: true,
+      includeRegistry: false,
+      useDetachedDevUpstream: true,
+      gitSourceHint: expect.objectContaining({
+        root: "/opt/openclaw",
+        sha: "current-sha",
+        upstreamRef: "origin/main",
+      }),
+    });
     expect(resolveNpmChannelTag).not.toHaveBeenCalled();
     expect(getUpdateAvailable()).toEqual({
       currentVersion: "1.0.0",
@@ -779,38 +796,6 @@ describe("update-startup", () => {
       message: expect.stringContaining("already current"),
     });
     expect(triage).not.toHaveBeenCalled();
-  });
-
-  it("continues automatic dev campaigns despite a failed handoff receipt", async () => {
-    writeDevGitInstallReceipt({
-      status: "error",
-      ts: Date.now() - 60_000,
-      reason: "managed-service-handoff-failed",
-    });
-    mockDevGitStatus({ branch: "HEAD" });
-    const runAutoUpdate = mockAutoUpdate();
-
-    await checkAutomatically(autoConfig("dev"));
-
-    expect(checkUpdateStatus).toHaveBeenCalledWith({
-      root: "/opt/openclaw",
-      signal: expect.any(AbortSignal),
-      fetchGit: true,
-      includeRegistry: false,
-      useDetachedDevUpstream: true,
-      gitSourceHint: expect.objectContaining({
-        root: "/opt/openclaw",
-        sha: "current-sha",
-        upstreamRef: "origin/main",
-      }),
-    });
-    expect(getUpdateSchedule()?.campaign?.state).toBe("countdown");
-    await clock.advanceBy(60_000);
-    expect(runAutoUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        devTarget: { mode: "tracked", upstreamRef: "origin/main", upstreamSha: "upstream-sha" },
-      }),
-    );
   });
 
   it("reports current checkout metadata from its matching receipt", async () => {

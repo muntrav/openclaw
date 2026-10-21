@@ -36,6 +36,91 @@ export type GitCandidateFixture = {
   expectNoRuntimeStagingPaths: () => Promise<void>;
 };
 
+export type GitUpdateFixture = Awaited<ReturnType<typeof createGitUpdateFixture>>;
+type GitUpdateOptions<T = UpdateRunnerOptions> = T extends UpdateRunnerOptions
+  ? Partial<Omit<T, "runGitDoctor" | "prepareGitExposure">> &
+      Pick<T, "runGitDoctor" | "prepareGitExposure">
+  : never;
+
+export async function createGitUpdateFixture(
+  directory: string,
+  manifest: Record<string, unknown> = {},
+) {
+  const checkout = await createGitFixtureCheckout(directory, manifest);
+  const events: string[] = [];
+  const inspectionRoots: string[] = [];
+  const runCommand: CommandRunner = async (argv, options) => {
+    if (argv[0] === "git") {
+      if (argv.includes("init") && argv.includes("--bare")) {
+        const mirror = argv.at(-1);
+        assert(mirror);
+        fixture.inspectionRoots.push(path.dirname(mirror));
+      }
+      return runCommandWithTimeout(argv, options);
+    }
+    if (argv[0] !== "pnpm") {
+      throw new Error(`Unexpected command: ${argv.join(" ")}`);
+    }
+    if (argv[1] === "build") {
+      expect(fixture.stopped).toBe(false);
+      expect(options.cwd).not.toBe(fixture.root);
+      await fixture.writeRuntime(
+        options.cwd!,
+        await runFixtureGit(options.cwd!, "rev-parse", "HEAD"),
+      );
+      fixture.events.push("build");
+    }
+    return { code: 0, stdout: argv[1] === "--version" ? "12.0.0" : "", stderr: "" };
+  };
+  const fixture = {
+    ...checkout,
+    directory,
+    stopped: false,
+    events,
+    inspectionRoots,
+    virtualStoreLayout: "node_modules/.pnpm",
+    runCommand,
+    advanceRemote: () => advanceFixtureRemote(checkout.remote),
+    writeRuntime(
+      root = checkout.root,
+      sha: string = fixture.beforeSha,
+      layout: string = fixture.virtualStoreLayout,
+    ): Promise<void> {
+      return writeRuntime(root, sha, path.join(directory, "shared-store"), layout);
+    },
+    async validateCandidate(candidateRoot: string) {
+      expect(fixture.stopped).toBe(false);
+      await expectHead(checkout.root, fixture.beforeSha);
+      expect(candidateRoot).not.toBe(checkout.root);
+      await expectRuntime(candidateRoot, await runFixtureGit(candidateRoot, "rev-parse", "HEAD"));
+      fixture.events.push("validate");
+    },
+    async beforeGitMutation() {
+      expect(fixture.stopped).toBe(false);
+      fixture.stopped = true;
+      fixture.events.push("stop");
+    },
+    update(opts: GitUpdateOptions): Promise<UpdateRunResult> {
+      return updateGitCheckout({
+        gitRoot: checkout.root,
+        runCommand: fixture.runCommand,
+        defaultCommandEnv: undefined,
+        timeoutMs: 5000,
+        startedAt: Date.now(),
+        opts: {
+          channel: "dev",
+          inspectGitTarget: async () => {},
+          validateCandidate: fixture.validateCandidate,
+          beforeGitMutation: fixture.beforeGitMutation,
+          ...opts,
+        },
+      });
+    },
+  };
+  await fixture.writeRuntime();
+  return fixture;
+}
+
 export function isolateGitIdentity() {
   vi.stubEnv("GIT_CONFIG_COUNT", "0");
   for (const role of ["AUTHOR", "COMMITTER"]) {
@@ -313,16 +398,6 @@ export const runtimeImports = [
   "../packages/runtime/node_modules/external-runtime",
   "virtual-runtime",
 ];
-
-export type VirtualStoreLayout =
-  | "node_modules/.pnpm"
-  | "node_modules/.cache/jiti"
-  | "node_modules/.vite/deps"
-  | ".pnpm"
-  | "cache/deps"
-  | "../store"
-  | "external"
-  | "symlink";
 
 export async function writeRuntime(directory: string, sha: string, store: string, layout: string) {
   const root = await fs.realpath(directory);

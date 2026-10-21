@@ -10,11 +10,11 @@ import {
 } from "./update-run-report.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
 
-function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
+type ReportRecord = Parameters<typeof renderUpdateRunReport>[0] &
+  Pick<UpdateRunRecord, "runId" | "trigger">;
+function run(patch: Partial<ReportRecord> = {}): ReportRecord {
   return {
     runId: "6631ecee-adbf-41e8-a0e3-1b88b28b0a59",
-    createdAtMs: 1,
-    updatedAtMs: 301,
     trigger: "cli",
     phase: "finished",
     status: "succeeded",
@@ -26,19 +26,17 @@ function run(patch: Partial<UpdateRunRecord> = {}): UpdateRunRecord {
     steps: [{ step: "staging", status: "completed", startedAtMs: 1, endedAtMs: 301 }],
     verification: {},
     repair: [],
-    confirmedAtMs: null,
-    finishedAtMs: 301,
     downtimeMs: null,
     ...patch,
   };
 }
 
-function failed(patch: Partial<UpdateRunRecord> = {}) {
+function failed(patch: Partial<ReportRecord> = {}) {
   return run({ status: "failed", ...patch });
 }
 
 function failureReport(
-  record: UpdateRunRecord,
+  record: ReportRecord,
   result: Partial<UpdateRunResult> = {},
   recorded = true,
 ) {
@@ -97,10 +95,7 @@ function serving(version: string, reason: RecoveryReason) {
   };
 }
 
-function renderRecord(
-  record: UpdateRunRecord,
-  options?: Parameters<typeof renderUpdateRunReport>[1],
-) {
+function renderRecord(record: ReportRecord, options?: Parameters<typeof renderUpdateRunReport>[1]) {
   const saved = structuredClone(record);
   record.steps.forEach(Object.freeze);
   Object.freeze(record.steps);
@@ -109,7 +104,7 @@ function renderRecord(
   expect(record).toEqual(saved);
   return report;
 }
-function render(patch: Partial<UpdateRunRecord>) {
+function render(patch: Partial<ReportRecord>) {
   return renderRecord(run(patch));
 }
 
@@ -450,7 +445,7 @@ it("bounds chat failures but preserves full CLI guidance", () => {
 const originAction = "Run `openclaw --profile work triage` to repair this installation.";
 const selectedAction = "Run `openclaw --profile team triage` to repair this installation.";
 type RecoveryCase = [
-  string | Partial<UpdateRunRecord>,
+  string | Partial<ReportRecord>,
   string[],
   string[]?,
   Parameters<typeof renderUpdateRunReport>[1]?,

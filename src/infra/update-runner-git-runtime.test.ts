@@ -151,6 +151,44 @@ describe("Git runtime promotion", () => {
   });
 
   it.each([false, true])(
+    "retries partial runtime restoration without losing originals (cleanup first: %s)",
+    async (cleanupFirst) => {
+      const candidate = await createCandidate();
+      const promotion = await preparePromotion(candidate);
+      await removeTree(path.dirname(candidate));
+      const rename = fs.rename.bind(fs);
+      const destination = path.join(root, "dist");
+      let backup: string | undefined;
+      let rejectRestore = true;
+      vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+        if (source === destination) {
+          backup = String(target);
+        }
+        if (rejectRestore && source === backup && target === destination) {
+          await writeFixtureTree(String(target), { "restore-race": "occupied" });
+        }
+        return rename(source, target);
+      });
+      await promotion.activate();
+      await expectRuntime(root, "candidate");
+      await expect(promotion.restore()).rejects.toThrow();
+      if (cleanupFirst) {
+        await promotion.cleanup();
+      }
+      assert(backup, "The original dist backup was not observed.");
+      expect(JSON.parse(await readText(path.join(backup, "build-info.json")))).toMatchObject({
+        commit: "original",
+      });
+      expect(await readText(path.join(root, "node_modules", "identity.cjs"))).toContain("original");
+      rejectRestore = false;
+      await promotion.restore();
+      await expectRuntime(root, "original");
+      await promotion.cleanup();
+      await expect(fs.stat(path.dirname(backup))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.each([false, true])(
     "does not repeat completed restoration after authority is lost (previous runtime: %s)",
     async (previous) => {
       const candidateRoot = await createCandidate();
@@ -487,3 +525,4 @@ runtimeIt.for([false, true])(
     }
   },
 );
+import assert from "node:assert/strict";
