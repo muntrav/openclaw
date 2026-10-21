@@ -176,7 +176,12 @@ it.each(["rejected", "declined"] as const)(
     await waitForSolid(() => expect(page.query(".exec-approval-error")).not.toBeNull());
     expect(page.toggle.open).toBe(true);
     expect(page.query<HTMLButtonElement>(".exec-approval-actions button")?.disabled).toBe(false);
+    const retry = deferred<boolean>();
+    patch.mockReturnValueOnce(retry.promise);
     click(page.container, ".exec-approval-actions button");
+    await waitForSolid(() => expect(page.text(".exec-approval-actions button")).toBe("Saving…"));
+    expect(page.query(".exec-approval-error")).toBeNull();
+    retry.resolve(true);
     await waitForSolid(() => expect(page.toggle.open).toBe(false));
     expect(patch).toHaveBeenCalledTimes(2);
     expect(page.query(".exec-approval-error")).toBeNull();
